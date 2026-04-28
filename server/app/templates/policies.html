@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Compliance — Manage{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Compliance Policies</h1></header>
+
+<section class="card">
+  <h2>New policy</h2>
+  <form method="post" action="/policies/create" class="task-form">
+    <label>Name<input name="name" required placeholder="Hardened servers"></label>
+    <label>Description<input name="description"></label>
+    <fieldset>
+      <legend>Targets</legend>
+      <label>Apply to groups (empty = all devices)
+        <select name="target_group_ids" multiple size="4">
+          {% for g in groups %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
+        </select>
+      </label>
+    </fieldset>
+    <label><input type="checkbox" name="enabled" checked> Enabled</label>
+    <label><input type="checkbox" name="auto_remediate"> Auto-remediate package drift (installs/removes packages on drift)</label>
+
+    <label>Rules (JSON list)
+      <textarea name="rules_json" rows="10" class="mono">[
+  {"kind": "package_installed", "params": {"packages": ["ufw", "fail2ban", "unattended-upgrades"]}},
+  {"kind": "package_absent",    "params": {"packages": ["telnetd"]}},
+  {"kind": "service_running",   "params": {"services": ["ssh", "ufw"]}},
+  {"kind": "file_contains",     "params": {"path": "/etc/ssh/sshd_config", "regex": "^\\s*PermitRootLogin\\s+no"}}
+]</textarea>
+    </label>
+    <button type="submit">Create policy</button>
+  </form>
+</section>
+
+<table class="tasks">
+  <thead><tr><th>Name</th><th>Rules</th><th>OK</th><th>Drift</th><th>Error</th><th>Coverage</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td><a href="/policies/{{ r.row.id }}">{{ r.row.name }}</a><br><span class="muted">{{ r.row.description }}</span></td>
+      <td>{{ r.row.rules|length }}</td>
+      <td>{{ r.ok }}</td>
+      <td><span class="status status-{% if r.drift %}failed{% else %}complete{% endif %}">{{ r.drift }}</span></td>
+      <td>{{ r.error }}</td>
+      <td>{{ r.total }} device(s)</td>
+      <td><span class="status status-{% if r.row.enabled %}complete{% else %}failed{% endif %}">{{ 'enabled' if r.row.enabled else 'disabled' }}</span>{% if r.row.auto_remediate %} <span class="tag">auto-fix</span>{% endif %}</td>
+      <td><a href="/policies/{{ r.row.id }}">view</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="empty">No policies yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="muted">Tip: pair a policy with a <a href="/schedules">schedule</a> running task type <code class="mono">check_compliance</code> with payload <code class="mono">{"policy_id": &lt;id&gt;}</code> to evaluate the policy at intervals across the fleet.</p>
+{% endblock %}

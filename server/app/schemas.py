@@ -20,6 +20,13 @@ class SystemInfo(BaseModel):
     ip_address: str = ""
     agent_version: str = ""
     logged_in_user: str = ""
+    manufacturer: str = ""
+    product_name: str = ""
+    serial_number: str = ""
+    bios_version: str = ""
+    gpu_model: str = ""
+    mac_address: str = ""
+    packages_hash: str = ""
 
 
 class EnrollRequest(BaseModel):

@@ -4,12 +4,15 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+import json
+import uuid
+
 from . import agent_release
 from .api_admin import TASK_PAYLOAD_SECRETS
 from .auth import generate_token, hash_token, require_agent
 from .config import settings
 from .db import get_db
-from .models import Agent, AgentRole, EnrollmentToken, Task
+from .models import Agent, AgentRole, ComplianceCheck, EnrollmentToken, Policy, Task
 from .schemas import (
     AgentUpdate,
     CheckinRequest,
@@ -43,6 +46,18 @@ def _apply_system_info(agent: Agent, info: SystemInfo) -> None:
     agent.ip_address = info.ip_address
     agent.agent_version = info.agent_version
     agent.logged_in_user = info.logged_in_user
+    if info.manufacturer:
+        agent.manufacturer = info.manufacturer
+    if info.product_name:
+        agent.product_name = info.product_name
+    if info.serial_number:
+        agent.serial_number = info.serial_number
+    if info.bios_version:
+        agent.bios_version = info.bios_version
+    if info.gpu_model:
+        agent.gpu_model = info.gpu_model
+    if info.mac_address:
+        agent.mac_address = info.mac_address
     agent.last_seen = datetime.now(timezone.utc)
 
 
@@ -148,7 +163,7 @@ def task_result(
     task.completed_at = datetime.now(timezone.utc)
 
     # Mirror role-install task results onto the AgentRole record.
-    if task.type in ("install_auth_server", "install_file_server"):
+    if task.type in ("install_auth_server", "install_file_server", "install_print_server", "install_dhcp_dns"):
         role = db.query(AgentRole).filter_by(install_task_id=task.id).first()
         if role:
             if req.exit_code == 0:
@@ -157,5 +172,69 @@ def task_result(
             else:
                 role.status = "failed"
 
+    # Compliance results: agent reported drift findings as JSON in stdout.
+    if task.type == "check_compliance":
+        _record_compliance(task, req, db)
+
     db.commit()
     return {"ok": True}
+
+
+def _record_compliance(task: Task, req: TaskResultRequest, db: Session) -> None:
+    payload = task.payload or {}
+    policy_id = payload.get("policy_id")
+    if not policy_id:
+        return
+    policy = db.get(Policy, policy_id)
+    if not policy:
+        return
+    findings: list[dict] = []
+    status = "error"
+    if req.exit_code in (0, 1):  # 0 = ok, 1 = drift; both produce JSON
+        try:
+            data = json.loads(req.stdout or "{}")
+            findings = data.get("drift") or []
+            status = "ok" if not findings else "drift"
+        except json.JSONDecodeError:
+            status = "error"
+    check = (
+        db.query(ComplianceCheck)
+        .filter_by(agent_pk=task.agent_pk, policy_id=policy_id)
+        .first()
+    )
+    if not check:
+        check = ComplianceCheck(agent_pk=task.agent_pk, policy_id=policy_id)
+        db.add(check)
+    check.status = status
+    check.drift = findings
+    check.last_checked = datetime.now(timezone.utc)
+    db.flush()
+
+    # Auto-remediate: queue tasks for fixable drift kinds.
+    if status == "drift" and policy.auto_remediate:
+        batch = uuid.uuid4().hex
+        for f in findings:
+            kind = f.get("kind")
+            params = f.get("params") or {}
+            if kind == "package_installed":
+                pkgs = params.get("missing") or params.get("packages") or []
+                if pkgs:
+                    db.add(Task(
+                        agent_pk=task.agent_pk,
+                        type="apt_install",
+                        payload={"packages": pkgs},
+                        created_by=f"auto-remediate:policy#{policy_id}",
+                        batch_id=batch,
+                        title=f"auto-remediate: install {' '.join(pkgs)}",
+                    ))
+            elif kind == "package_absent":
+                pkgs = params.get("present") or params.get("packages") or []
+                if pkgs:
+                    db.add(Task(
+                        agent_pk=task.agent_pk,
+                        type="apt_remove",
+                        payload={"packages": pkgs},
+                        created_by=f"auto-remediate:policy#{policy_id}",
+                        batch_id=batch,
+                        title=f"auto-remediate: remove {' '.join(pkgs)}",
+                    ))

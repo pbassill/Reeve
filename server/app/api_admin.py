@@ -41,6 +41,11 @@ VALID_TASK_TYPES = {
     "self_update",
     "install_auth_server",
     "install_file_server",
+    "install_print_server",
+    "install_dhcp_dns",
+    "check_compliance",
+    "inventory_refresh",
+    "open_terminal",
 }
 
 # Task payload keys that are secrets — scrubbed from the DB row right after
@@ -84,6 +89,10 @@ def _validate_payload(task_type: str, payload: dict[str, Any]) -> None:
         _validate_role_auth_server(payload)
     elif task_type == "install_file_server":
         _validate_role_file_server(payload)
+    elif task_type == "install_print_server":
+        _validate_role_print_server(payload)
+    elif task_type == "install_dhcp_dns":
+        _validate_role_dhcp_dns(payload)
 
 
 _REALM_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*(\.[A-Z0-9][A-Z0-9-]*)+$")
@@ -108,6 +117,33 @@ def _validate_role_auth_server(p: dict[str, Any]) -> None:
     p["realm"] = realm
     p["domain"] = domain
     p["dns_forwarder"] = fwd
+
+
+def _validate_role_print_server(p: dict[str, Any]) -> None:
+    p["allow_remote_admin"] = bool(p.get("allow_remote_admin", False))
+    p["admin_username"] = (p.get("admin_username") or "").strip()
+    if p["allow_remote_admin"] and not p["admin_username"]:
+        raise HTTPException(status_code=400, detail="admin_username required when allow_remote_admin=true")
+
+
+def _validate_role_dhcp_dns(p: dict[str, Any]) -> None:
+    iface = (p.get("interface") or "").strip()
+    if not iface or not iface.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="interface required (e.g. eth0)")
+    subnet = (p.get("subnet") or "").strip()
+    range_start = (p.get("range_start") or "").strip()
+    range_end = (p.get("range_end") or "").strip()
+    gateway = (p.get("gateway") or "").strip()
+    netmask = (p.get("netmask") or "255.255.255.0").strip()
+    upstream_dns = (p.get("upstream_dns") or "1.1.1.1").strip()
+    domain = (p.get("domain") or "lan").strip()
+    for label, value in [("subnet", subnet), ("range_start", range_start),
+                          ("range_end", range_end), ("gateway", gateway),
+                          ("netmask", netmask), ("upstream_dns", upstream_dns)]:
+        if not _IP_RE.match(value):
+            raise HTTPException(status_code=400, detail=f"{label} must be a valid IPv4 address")
+    p.update(interface=iface, subnet=subnet, range_start=range_start, range_end=range_end,
+             gateway=gateway, netmask=netmask, upstream_dns=upstream_dns, domain=domain)
 
 
 def _validate_role_file_server(p: dict[str, Any]) -> None:
@@ -217,6 +253,16 @@ def _default_title(task_type: str, payload: dict[str, Any]) -> str:
         mode = payload.get("mode", "standalone")
         n = len(payload.get("departments") or [])
         return f"install file server ({mode}, {n} dept(s))"
+    if task_type == "install_print_server":
+        return "install print server (CUPS)"
+    if task_type == "install_dhcp_dns":
+        return f"install DHCP+DNS ({payload.get('interface', 'iface')}, subnet={payload.get('subnet', '')})"
+    if task_type == "check_compliance":
+        return f"compliance check (policy {payload.get('policy_id', '?')})"
+    if task_type == "inventory_refresh":
+        return "inventory refresh"
+    if task_type == "open_terminal":
+        return f"terminal session {payload.get('session_id', '')[:8]}"
     return task_type
 
 
@@ -278,11 +324,14 @@ def install_role(
 
     Used by both the JSON API (`POST /api/admin/roles`) and the form view (`POST /roles/install`).
     """
-    if role_type == "auth_server":
-        task_type = "install_auth_server"
-    elif role_type == "file_server":
-        task_type = "install_file_server"
-    else:
+    role_to_task = {
+        "auth_server": "install_auth_server",
+        "file_server": "install_file_server",
+        "print_server": "install_print_server",
+        "dhcp_dns": "install_dhcp_dns",
+    }
+    task_type = role_to_task.get(role_type)
+    if not task_type:
         raise HTTPException(status_code=400, detail=f"unknown role_type {role_type}")
     _validate_payload(task_type, payload)
 

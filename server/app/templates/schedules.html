@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Schedules — Manage{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Schedules</h1></header>
+
+<section class="card">
+  <h2>New schedule</h2>
+  <form method="post" action="/schedules/create" class="task-form">
+    <label>Name<input name="name" required placeholder="Weekly apt upgrade — servers"></label>
+    <label>Description<input name="description" placeholder="optional"></label>
+
+    <div class="row">
+      <label>Cron expression (UTC)<input name="cron_expr" placeholder="0 3 * * 0"></label>
+      <span class="muted">— or —</span>
+      <label>Interval seconds<input name="interval_seconds" type="number" min="60" placeholder="3600"></label>
+    </div>
+    <p class="muted">Cron uses standard 5-field syntax. <code class="mono">0 3 * * 0</code> = Sundays at 03:00 UTC.</p>
+
+    <div class="row">
+      <label>Maintenance window start<input name="window_start" placeholder="02:00" pattern="[0-9]{2}:[0-9]{2}"></label>
+      <label>Maintenance window end<input name="window_end" placeholder="04:00" pattern="[0-9]{2}:[0-9]{2}"></label>
+    </div>
+    <p class="muted">Optional. UTC HH:MM. If set, fires only inside the window — otherwise it waits until the next acceptable tick.</p>
+
+    <label>Task type
+      <select name="task_type" required>
+        {% for t in task_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Task payload (JSON)
+      <textarea name="task_payload_json" rows="3" placeholder='{"command": "apt-get upgrade -y"}'></textarea>
+    </label>
+
+    <fieldset>
+      <legend>Targets</legend>
+      <label><input type="checkbox" name="target_all"> All devices</label>
+      <label>Specific devices
+        <select name="target_agent_ids" multiple size="4">
+          {% for a in agents %}<option value="{{ a.agent_id }}">{{ a.hostname }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Groups
+        <select name="target_group_ids" multiple size="4">
+          {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.members|length }})</option>{% endfor %}
+        </select>
+      </label>
+    </fieldset>
+
+    <button type="submit">Create schedule</button>
+  </form>
+</section>
+
+<table class="tasks">
+  <thead><tr><th>Name</th><th>Trigger</th><th>Window</th><th>Task</th><th>Last run</th><th>Next run</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.row.name }}<br><span class="muted">{{ r.row.description }}</span></td>
+      <td class="mono">{% if r.row.cron_expr %}cron: {{ r.row.cron_expr }}{% else %}every {{ r.row.interval_seconds }}s{% endif %}</td>
+      <td class="mono">{% if r.row.window_start %}{{ r.row.window_start }}–{{ r.row.window_end }}{% else %}—{% endif %}</td>
+      <td class="mono">{{ r.row.task_type }}</td>
+      <td>{{ r.last_run }}</td>
+      <td>{{ r.next_run }}</td>
+      <td><span class="status status-{{ 'complete' if r.row.enabled else 'failed' }}">{{ 'enabled' if r.row.enabled else 'disabled' }}</span></td>
+      <td class="row-actions">
+        <form method="post" action="/schedules/{{ r.row.id }}/run-now"><button class="link">Run now</button></form>
+        <form method="post" action="/schedules/{{ r.row.id }}/toggle"><button class="link">{{ 'Disable' if r.row.enabled else 'Enable' }}</button></form>
+        <form method="post" action="/schedules/{{ r.row.id }}/delete" onsubmit="return confirm('Delete schedule {{ r.row.name }}?')"><button class="link">Delete</button></form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="empty">No schedules yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

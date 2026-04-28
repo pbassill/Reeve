@@ -346,6 +346,16 @@ def execute_task(task: dict[str, Any], agent_state: dict[str, Any]) -> tuple[int
         return _install_auth_server(p)
     if t == "install_file_server":
         return _install_file_server(p)
+    if t == "install_print_server":
+        return _install_print_server(p)
+    if t == "install_dhcp_dns":
+        return _install_dhcp_dns(p)
+    if t == "check_compliance":
+        return _check_compliance(p)
+    if t == "inventory_refresh":
+        return _inventory_refresh(agent_state)
+    if t == "open_terminal":
+        return _open_terminal(p, agent_state)
     return 1, "", f"unknown task type {t}"
 
 

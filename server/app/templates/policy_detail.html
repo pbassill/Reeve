@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ policy.name }} — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>{{ policy.name }}</h1>
+    <div class="muted">{{ policy.description }}</div>
+  </div>
+  <div class="row-actions">
+    <form method="post" action="/policies/{{ policy.id }}/check-now"><button>Check now (queue across fleet)</button></form>
+    <form method="post" action="/policies/{{ policy.id }}/toggle"><button class="link">{{ 'Disable' if policy.enabled else 'Enable' }}</button></form>
+    <form method="post" action="/policies/{{ policy.id }}/delete" onsubmit="return confirm('Delete policy?')"><button class="link">Delete</button></form>
+  </div>
+</header>
+
+<section class="card">
+  <h2>Rules</h2>
+  <pre class="output">{{ rules_pretty }}</pre>
+</section>
+
+<section class="card">
+  <h2>Compliance status by device</h2>
+  <table class="tasks">
+    <thead><tr><th>Device</th><th>Status</th><th>Drift</th><th>Last checked</th></tr></thead>
+    <tbody>
+      {% for c in checks %}
+      <tr>
+        <td><a href="/devices/{{ c.row.agent.agent_id }}">{{ c.row.agent.hostname }}</a></td>
+        <td><span class="status status-{{ 'complete' if c.row.status=='ok' else ('failed' if c.row.status=='drift' else 'pending') }}">{{ c.row.status }}</span></td>
+        <td>
+          {% if c.row.drift %}
+            <ul>
+              {% for f in c.row.drift %}
+              <li><code class="mono">{{ f.kind }}</code> — {{ f.message or f.params }}</li>
+              {% endfor %}
+            </ul>
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ c.last }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No checks recorded yet. Click "Check now" to queue checks across the policy's targets.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

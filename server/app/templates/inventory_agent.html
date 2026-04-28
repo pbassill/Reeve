@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Inventory: {{ agent.hostname }} — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>{{ agent.hostname }} <span class="muted">— inventory</span></h1>
+    <div class="muted">Packages last collected: {{ packages_updated }}</div>
+  </div>
+  <form method="post" action="/inventory/{{ agent.agent_id }}/refresh"><button>Refresh now</button></form>
+</header>
+
+<section class="info-grid">
+  <div><dt>Manufacturer</dt><dd>{{ agent.manufacturer or "—" }}</dd></div>
+  <div><dt>Model</dt><dd>{{ agent.product_name or "—" }}</dd></div>
+  <div><dt>Serial</dt><dd class="mono">{{ agent.serial_number or "—" }}</dd></div>
+  <div><dt>BIOS</dt><dd class="mono">{{ agent.bios_version or "—" }}</dd></div>
+  <div><dt>GPU</dt><dd>{{ agent.gpu_model or "—" }}</dd></div>
+  <div><dt>MAC</dt><dd class="mono">{{ agent.mac_address or "—" }}</dd></div>
+  <div><dt>Maintenance window</dt><dd>{% if agent.maintenance_window_start %}{{ agent.maintenance_window_start }}–{{ agent.maintenance_window_end }} UTC{% else %}always allow{% endif %}</dd></div>
+</section>
+
+<section class="card">
+  <h2>Installed packages ({{ packages|length }})</h2>
+  <table class="tasks">
+    <thead><tr><th>Source</th><th>Name</th><th>Version</th></tr></thead>
+    <tbody>
+      {% for p in packages %}
+      <tr>
+        <td><span class="tag">{{ p.source }}</span></td>
+        <td class="mono">{{ p.name }}</td>
+        <td class="mono">{{ p.version }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="empty">No package list collected yet. Click "Refresh now".</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Inventory — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>Inventory</h1>
+  <form method="get" class="filters">
+    <input name="q" value="{{ q }}" placeholder="Search package (e.g. firefox)">
+    <select name="source">
+      <option value="" {% if not source %}selected{% endif %}>any source</option>
+      <option value="apt" {% if source=='apt' %}selected{% endif %}>apt</option>
+      <option value="snap" {% if source=='snap' %}selected{% endif %}>snap</option>
+      <option value="flatpak" {% if source=='flatpak' %}selected{% endif %}>flatpak</option>
+    </select>
+    <button type="submit">Search</button>
+  </form>
+</header>
+
+{% if q %}
+<section class="card">
+  <h2>Search results ({{ matches|length }}{% if matches|length == 500 %}+{% endif %})</h2>
+  <table class="tasks">
+    <thead><tr><th>Package</th><th>Version</th><th>Source</th><th>Host</th></tr></thead>
+    <tbody>
+      {% for m in matches %}
+      <tr>
+        <td class="mono">{{ m.pkg.name }}</td>
+        <td class="mono">{{ m.pkg.version }}</td>
+        <td><span class="tag">{{ m.pkg.source }}</span></td>
+        <td>{% if m.agent %}<a href="/devices/{{ m.agent.agent_id }}">{{ m.agent.hostname }}</a>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No matches.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Hardware overview</h2>
+  <table class="devices">
+    <thead><tr><th>Hostname</th><th>Manufacturer</th><th>Model</th><th>Serial</th><th>BIOS</th><th>GPU</th><th>MAC</th><th>Packages</th><th></th></tr></thead>
+    <tbody>
+      {% for a in agents %}
+      <tr>
+        <td><a href="/inventory/{{ a.agent_id }}">{{ a.hostname }}</a></td>
+        <td>{{ a.manufacturer or "—" }}</td>
+        <td>{{ a.product_name or "—" }}</td>
+        <td class="mono">{{ a.serial_number or "—" }}</td>
+        <td class="mono">{{ a.bios_version or "—" }}</td>
+        <td>{{ a.gpu_model or "—" }}</td>
+        <td class="mono">{{ a.mac_address or "—" }}</td>
+        <td>{% if a.packages_hash %}<a href="/inventory/{{ a.agent_id }}">view</a>{% else %}<em class="muted">not collected</em>{% endif %}</td>
+        <td><form method="post" action="/inventory/{{ a.agent_id }}/refresh"><button class="link">Refresh</button></form></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty">No agents enrolled.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

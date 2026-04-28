@@ -18,6 +18,8 @@ router = APIRouter()
 ROLE_LABELS = {
     "auth_server": "Authentication Server (Samba AD-DC)",
     "file_server": "File Server (Samba shares + homes)",
+    "print_server": "Print Server (CUPS)",
+    "dhcp_dns": "DHCP + DNS (dnsmasq)",
 }
 
 
@@ -85,6 +87,22 @@ async def roles_install(
                 join_password=form.get("join_password", ""),
                 dc_ip=form.get("dc_ip", ""),
             )
+    elif role_type == "print_server":
+        payload = {
+            "allow_remote_admin": form.get("allow_remote_admin") == "on",
+            "admin_username": (form.get("admin_username") or "").strip(),
+        }
+    elif role_type == "dhcp_dns":
+        payload = {
+            "interface": (form.get("interface") or "").strip(),
+            "subnet": (form.get("subnet") or "").strip(),
+            "range_start": (form.get("range_start") or "").strip(),
+            "range_end": (form.get("range_end") or "").strip(),
+            "gateway": (form.get("gateway") or "").strip(),
+            "netmask": (form.get("netmask") or "255.255.255.0").strip(),
+            "upstream_dns": (form.get("upstream_dns") or "1.1.1.1").strip(),
+            "domain": (form.get("domain") or "lan").strip(),
+        }
     else:
         request.session["flash"] = f"Unknown role type '{role_type}'."
         return RedirectResponse("/roles", status_code=303)

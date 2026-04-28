@@ -24,6 +24,8 @@
         <option value="">— pick a role —</option>
         <option value="auth_server">Authentication Server (Samba AD-DC)</option>
         <option value="file_server">File Server (Samba shares + homes)</option>
+        <option value="print_server">Print Server (CUPS)</option>
+        <option value="dhcp_dns">DHCP + DNS (dnsmasq)</option>
       </select>
     </label>
 
@@ -54,6 +56,26 @@
         <label>Administrator password (for join)<input name="join_password" type="password" autocomplete="new-password"></label>
         <label>DC IP (optional, sets resolver)<input name="dc_ip" placeholder="10.0.0.10"></label>
       </fieldset>
+    </fieldset>
+
+    <fieldset id="rf-print_server" class="role-form" hidden>
+      <legend>Print Server (CUPS)</legend>
+      <p class="muted">Installs CUPS and starts <code>cups.service</code>. By default the admin UI is restricted to localhost.</p>
+      <label><input type="checkbox" name="allow_remote_admin"> Expose CUPS admin to the LAN (port 631)</label>
+      <label>Local admin user (added to <code>lpadmin</code>)<input name="admin_username" placeholder="cupsadmin"></label>
+    </fieldset>
+
+    <fieldset id="rf-dhcp_dns" class="role-form" hidden>
+      <legend>DHCP + DNS (dnsmasq)</legend>
+      <p class="muted">Installs dnsmasq, disables systemd-resolved, configures a DHCP scope and forwarding DNS resolver. Useful as the lab/branch-office server.</p>
+      <label>Interface<input name="interface" placeholder="eth0"></label>
+      <label>Subnet<input name="subnet" placeholder="192.168.50.0"></label>
+      <label>Netmask<input name="netmask" value="255.255.255.0"></label>
+      <label>DHCP range start<input name="range_start" placeholder="192.168.50.100"></label>
+      <label>DHCP range end<input name="range_end" placeholder="192.168.50.200"></label>
+      <label>Gateway (advertised to clients)<input name="gateway" placeholder="192.168.50.1"></label>
+      <label>Upstream DNS forwarder<input name="upstream_dns" value="1.1.1.1"></label>
+      <label>Local domain<input name="domain" value="lan"></label>
     </fieldset>
 
     <button type="submit">Install role</button>
