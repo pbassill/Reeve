@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Tasks — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>Tasks</h1>
+  <form method="get" class="filters">
+    <select name="status" onchange="this.form.submit()">
+      <option value="">All statuses</option>
+      <option value="pending" {% if status_filter=='pending' %}selected{% endif %}>Pending</option>
+      <option value="running" {% if status_filter=='running' %}selected{% endif %}>Running</option>
+      <option value="complete" {% if status_filter=='complete' %}selected{% endif %}>Complete</option>
+      <option value="failed" {% if status_filter=='failed' %}selected{% endif %}>Failed</option>
+    </select>
+  </form>
+</header>
+
+<section class="card">
+  <h2>Send a task to all devices</h2>
+  <form method="post" action="/tasks/create" class="task-form">
+    <input type="hidden" name="target_all" value="1">
+    <label>Task type
+      <select name="type" onchange="document.querySelectorAll('.payload').forEach(p=>p.hidden=true);document.getElementById('payload-'+this.value).hidden=false;">
+        <option value="shell">Run shell command</option>
+        <option value="apt_upgrade">Upgrade all packages</option>
+        <option value="apt_install">Install apt packages</option>
+      </select>
+    </label>
+    <div id="payload-shell" class="payload"><label>Command<textarea name="command" rows="2"></textarea></label></div>
+    <div id="payload-apt_upgrade" class="payload" hidden><p class="muted">Runs on every enrolled device.</p></div>
+    <div id="payload-apt_install" class="payload" hidden><label>Packages<input name="packages"></label></div>
+    <button type="submit" onclick="return confirm('Send to ALL devices?')">Queue fleet-wide</button>
+  </form>
+</section>
+
+<table class="tasks">
+  <thead>
+    <tr><th>When</th><th>Title</th><th>Device</th><th>By</th><th>Status</th><th>Exit</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td class="muted">{{ r.created }}</td>
+      <td><a href="/tasks/{{ r.task.id }}">{{ r.task.title }}</a></td>
+      <td><a href="/devices/{{ r.task.agent.agent_id }}">{{ r.task.agent.hostname }}</a></td>
+      <td>{{ r.task.created_by }}</td>
+      <td><span class="status status-{{ r.task.status }}">{{ r.task.status }}</span></td>
+      <td>{{ r.task.exit_code if r.task.exit_code is not none else "—" }}</td>
+      <td>{% if r.task.status == "pending" %}<form method="post" action="/tasks/{{ r.task.id }}/cancel"><button class="link">Cancel</button></form>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty">No tasks.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

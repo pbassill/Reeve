@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Task #{{ task.id }} — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>{{ task.title }}</h1>
+    <div class="muted">Task #{{ task.id }} · <a href="/devices/{{ task.agent.agent_id }}">{{ task.agent.hostname }}</a></div>
+  </div>
+  <span class="status status-{{ task.status }}">{{ task.status }}</span>
+</header>
+
+<section class="info-grid">
+  <div><dt>Type</dt><dd class="mono">{{ task.type }}</dd></div>
+  <div><dt>Created by</dt><dd>{{ task.created_by }}</dd></div>
+  <div><dt>Created</dt><dd>{{ created }}</dd></div>
+  <div><dt>Dispatched</dt><dd>{{ dispatched or "—" }}</dd></div>
+  <div><dt>Completed</dt><dd>{{ completed or "—" }}</dd></div>
+  <div><dt>Exit code</dt><dd>{{ task.exit_code if task.exit_code is not none else "—" }}</dd></div>
+  {% if task.batch_id %}<div><dt>Batch</dt><dd class="mono">{{ task.batch_id[:8] }}</dd></div>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Payload</h2>
+  <pre class="output">{{ payload_json }}</pre>
+</section>
+
+<section class="card">
+  <h2>stdout</h2>
+  <pre class="output">{{ task.stdout or "(empty)" }}</pre>
+</section>
+
+<section class="card">
+  <h2>stderr</h2>
+  <pre class="output">{{ task.stderr or "(empty)" }}</pre>
+</section>
+{% endblock %}

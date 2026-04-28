@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Admins — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>Administrators</h1>
+  {% if ldap_configured %}<span class="tag">LDAP enabled</span>{% else %}<span class="muted">LDAP not configured</span>{% endif %}
+</header>
+
+<section class="card">
+  <h2>Add a local admin</h2>
+  <form method="post" action="/admins/create" class="inline-form">
+    <input name="username" placeholder="Username" required>
+    <input name="display_name" placeholder="Display name (optional)">
+    <input name="password" type="password" placeholder="Password" required>
+    <button type="submit">Create</button>
+  </form>
+</section>
+
+<table class="tasks">
+  <thead><tr><th>Username</th><th>Display name</th><th>Source</th><th>Last login</th><th>Created</th><th></th></tr></thead>
+  <tbody>
+    {% for a in admins %}
+    <tr>
+      <td>{{ a.row.username }}{% if a.is_self %} <span class="muted">(you)</span>{% endif %}</td>
+      <td>{{ a.row.display_name or "—" }}</td>
+      <td><span class="tag">{{ a.row.auth_source }}</span></td>
+      <td>{{ a.last_login }}</td>
+      <td>{{ a.created }}</td>
+      <td class="row-actions">
+        {% if a.row.auth_source == "local" %}
+        <details>
+          <summary>Set password</summary>
+          <form method="post" action="/admins/{{ a.row.id }}/password" class="inline-form">
+            <input name="password" type="password" placeholder="New password" required>
+            <button type="submit">Save</button>
+          </form>
+        </details>
+        {% endif %}
+        {% if not a.is_self %}
+        <form method="post" action="/admins/{{ a.row.id }}/delete" onsubmit="return confirm('Remove admin {{ a.row.username }}?')">
+          <button class="link">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,21 @@
+[Unit]
+Description=Manage agent (centralized Ubuntu management)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/manage-agent/manage-agent.py
+Restart=always
+RestartSec=10
+User=root
+StandardOutput=journal
+StandardError=journal
+
+# Hardening — but we need root + network + apt, so most sandboxing is off.
+NoNewPrivileges=false
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Devices — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>Devices <span class="muted">({{ rows|length }})</span></h1>
+  <form method="get" class="filters">
+    <select name="group" onchange="this.form.submit()">
+      <option value="">All groups</option>
+      {% for g in groups %}
+      <option value="{{ g.id }}" {% if selected_group_id == g.id %}selected{% endif %}>{{ g.name }}</option>
+      {% endfor %}
+    </select>
+    <input name="q" value="{{ q or '' }}" placeholder="Search hostname / IP" onchange="this.form.submit()">
+  </form>
+</header>
+
+<table class="devices" id="devices-table">
+  <thead>
+    <tr>
+      <th></th>
+      <th>Hostname</th>
+      <th>OS</th>
+      <th>IP</th>
+      <th>Groups</th>
+      <th>CPU</th>
+      <th>RAM</th>
+      <th>Disk</th>
+      <th>Uptime</th>
+      <th>Last seen</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr data-agent-id="{{ r.agent.agent_id }}">
+      <td><span class="dot dot-{{ r.status }}" data-cell="status" title="{{ r.status }}"></span></td>
+      <td><a href="/devices/{{ r.agent.agent_id }}">{{ r.agent.hostname }}</a></td>
+      <td>{{ r.agent.os_name }} {{ r.agent.os_version }}</td>
+      <td class="mono" data-cell="ip">{{ r.agent.ip_address }}</td>
+      <td>{% for g in r.agent.groups %}<span class="tag">{{ g.name }}</span>{% endfor %}</td>
+      <td data-cell="cpu">{{ "%.0f"|format(r.agent.cpu_percent) }}%</td>
+      <td data-cell="mem">{{ r.mem_pct }}%</td>
+      <td data-cell="disk">{{ r.disk_pct }}%</td>
+      <td data-cell="uptime">{{ r.uptime }}</td>
+      <td data-cell="last_seen">{{ r.last_seen }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="10" class="empty">No devices enrolled yet. <a href="/enrollment">Generate an enrollment token</a> to add one.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="ws-status muted mono" id="ws-status">connecting…</div>
+
+<script>
+(function() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws/devices`;
+  const statusEl = document.getElementById('ws-status');
+  let ws = null;
+  let pingTimer = null;
+  let backoff = 1000;
+
+  function connect() {
+    statusEl.textContent = 'connecting…';
+    ws = new WebSocket(url);
+    ws.onopen = () => {
+      backoff = 1000;
+      statusEl.textContent = 'live';
+      pingTimer = setInterval(() => { try { ws.send('ping'); } catch (e) {} }, 25000);
+    };
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type !== 'agent_status') return;
+      const row = document.querySelector(`tr[data-agent-id="${msg.agent_id}"]`);
+      if (!row) return;
+      const dot = row.querySelector('[data-cell="status"]');
+      dot.className = `dot dot-${msg.status}`;
+      dot.title = msg.status;
+      row.querySelector('[data-cell="ip"]').textContent = msg.ip_address;
+      row.querySelector('[data-cell="cpu"]').textContent = `${Math.round(msg.cpu_percent)}%`;
+      const memPct = msg.mem_total_mb ? Math.round(msg.mem_used_mb / msg.mem_total_mb * 100) : 0;
+      row.querySelector('[data-cell="mem"]').textContent = `${memPct}%`;
+      const diskPct = msg.disk_total_gb ? Math.round(msg.disk_used_gb / msg.disk_total_gb * 100) : 0;
+      row.querySelector('[data-cell="disk"]').textContent = `${diskPct}%`;
+      row.querySelector('[data-cell="last_seen"]').textContent = msg.last_seen;
+    };
+    ws.onclose = () => {
+      statusEl.textContent = `disconnected — retrying in ${Math.round(backoff/1000)}s`;
+      if (pingTimer) clearInterval(pingTimer);
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 30000);
+    };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+  }
+  connect();
+})();
+</script>
+{% endblock %}

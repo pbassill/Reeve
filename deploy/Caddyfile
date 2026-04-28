@@ -1,0 +1,4 @@
+{$MANAGE_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy manage:8000
+}

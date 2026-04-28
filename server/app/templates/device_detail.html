@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.hostname }} — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>
+      <span class="dot dot-{{ status }}"></span>
+      {{ agent.hostname }}
+    </h1>
+    <div class="muted mono">{{ agent.agent_id }}</div>
+  </div>
+  <form method="post" action="/devices/{{ agent.agent_id }}/delete" onsubmit="return confirm('Remove this device from Manage? It will need to re-enroll to come back.')">
+    <button class="danger" type="submit">Remove device</button>
+  </form>
+</header>
+
+<section class="info-grid">
+  <div><dt>OS</dt><dd>{{ agent.os_name }} {{ agent.os_version }}</dd></div>
+  <div><dt>Kernel</dt><dd>{{ agent.kernel }} ({{ agent.arch }})</dd></div>
+  <div><dt>CPU</dt><dd>{{ agent.cpu_model }} × {{ agent.cpu_cores }} ({{ "%.0f"|format(agent.cpu_percent) }}% load)</dd></div>
+  <div><dt>Memory</dt><dd>{{ agent.mem_used_mb }} / {{ agent.mem_total_mb }} MB</dd></div>
+  <div><dt>Disk</dt><dd>{{ agent.disk_used_gb }} / {{ agent.disk_total_gb }} GB</dd></div>
+  <div><dt>IP</dt><dd class="mono">{{ agent.ip_address }}</dd></div>
+  <div><dt>Uptime</dt><dd>{{ uptime }}</dd></div>
+  <div><dt>Logged-in user</dt><dd>{{ agent.logged_in_user or "—" }}</dd></div>
+  <div><dt>Agent version</dt><dd>{{ agent.agent_version or "—" }}</dd></div>
+  <div><dt>Last seen</dt><dd>{{ last_seen }}</dd></div>
+  <div><dt>Enrolled</dt><dd>{{ enrolled }}</dd></div>
+  <div><dt>Groups</dt><dd>{% for g in agent.groups %}<span class="tag">{{ g.name }}</span>{% else %}<span class="muted">none</span>{% endfor %}</dd></div>
+</section>
+
+<section class="card">
+  <h2>Send a task</h2>
+  <form method="post" action="/tasks/create" class="task-form">
+    <input type="hidden" name="target_agent_id" value="{{ agent.agent_id }}">
+    <label>Task type
+      <select name="type" onchange="document.querySelectorAll('.payload').forEach(p=>p.hidden=true);document.getElementById('payload-'+this.value).hidden=false;">
+        <optgroup label="System">
+          <option value="shell">Run shell command (root)</option>
+          <option value="push_file">Push file</option>
+          <option value="reboot">Reboot</option>
+          <option value="shutdown">Shut down</option>
+          <option value="self_update">Update agent now</option>
+        </optgroup>
+        <optgroup label="Packages">
+          <option value="apt_install">apt: install</option>
+          <option value="apt_remove">apt: remove</option>
+          <option value="apt_upgrade">apt: upgrade all</option>
+          <option value="snap_install">snap: install</option>
+          <option value="snap_remove">snap: remove</option>
+          <option value="snap_refresh">snap: refresh all</option>
+          <option value="flatpak_install">flatpak: install</option>
+          <option value="flatpak_remove">flatpak: remove</option>
+          <option value="flatpak_update">flatpak: update all</option>
+        </optgroup>
+        <optgroup label="Desktop (system-wide)">
+          <option value="set_wallpaper">Set wallpaper (system-wide)</option>
+        </optgroup>
+        <optgroup label="Desktop (logged-in user)">
+          <option value="user_shell">Run shell command (as desktop user)</option>
+          <option value="user_gsettings">Set GSettings key</option>
+          <option value="set_wallpaper_user">Set wallpaper (per-user)</option>
+          <option value="set_dock_favorites">Set dock favorites</option>
+        </optgroup>
+      </select>
+    </label>
+    <div id="payload-shell" class="payload">
+      <label>Command<textarea name="command" rows="3" placeholder="apt list --installed | head"></textarea></label>
+    </div>
+    <div id="payload-apt_install" class="payload" hidden>
+      <label>Packages (space-separated)<input name="packages" placeholder="htop neovim curl"></label>
+    </div>
+    <div id="payload-apt_remove" class="payload" hidden>
+      <label>Packages (space-separated)<input name="packages_remove" placeholder="firefox"></label>
+    </div>
+    <div id="payload-apt_upgrade" class="payload" hidden>
+      <p class="muted">Runs <code>apt update && apt upgrade -y</code>.</p>
+    </div>
+    <div id="payload-snap_install" class="payload" hidden>
+      <label>Snaps (space-separated)<input name="snap_packages" placeholder="code chromium"></label>
+    </div>
+    <div id="payload-snap_remove" class="payload" hidden>
+      <label>Snaps to remove<input name="snap_packages_remove"></label>
+    </div>
+    <div id="payload-snap_refresh" class="payload" hidden><p class="muted">Refreshes every snap.</p></div>
+    <div id="payload-flatpak_install" class="payload" hidden>
+      <label>App IDs (space-separated)<input name="flatpak_apps" placeholder="org.gimp.GIMP org.libreoffice.LibreOffice"></label>
+      <label>Remote<input name="flatpak_remote" value="flathub"></label>
+    </div>
+    <div id="payload-flatpak_remove" class="payload" hidden>
+      <label>App IDs to remove<input name="flatpak_apps_remove"></label>
+    </div>
+    <div id="payload-flatpak_update" class="payload" hidden><p class="muted">Updates all flatpaks.</p></div>
+    <div id="payload-push_file" class="payload" hidden>
+      <label>Absolute path<input name="path" placeholder="/etc/motd"></label>
+      <label>Mode (octal)<input name="mode" value="0644" placeholder="0644"></label>
+      <label>Content<textarea name="content" rows="4"></textarea></label>
+    </div>
+    <div id="payload-reboot" class="payload" hidden><p class="muted">Reboots in 60 seconds.</p></div>
+    <div id="payload-shutdown" class="payload" hidden><p class="muted">Powers off in 60 seconds.</p></div>
+    <div id="payload-self_update" class="payload" hidden><p class="muted">Forces the agent to download the latest version from the server and restart.</p></div>
+    <div id="payload-set_wallpaper" class="payload" hidden>
+      <label>Image URL<input name="wallpaper_url" placeholder="https://example.com/bg.jpg"></label>
+      <p class="muted">Applied to all users via dconf system override.</p>
+    </div>
+    <div id="payload-user_shell" class="payload" hidden>
+      <label>Command (runs as desktop user)<textarea name="command" rows="2"></textarea></label>
+    </div>
+    <div id="payload-user_gsettings" class="payload" hidden>
+      <label>Schema<input name="gs_schema" placeholder="org.gnome.desktop.interface"></label>
+      <label>Key<input name="gs_key" placeholder="color-scheme"></label>
+      <label>Value (GVariant syntax)<input name="gs_value" placeholder="'prefer-dark'"></label>
+    </div>
+    <div id="payload-set_wallpaper_user" class="payload" hidden>
+      <label>Image URL<input name="wallpaper_url" placeholder="https://example.com/bg.jpg"></label>
+      <p class="muted">Set for the currently logged-in desktop user.</p>
+    </div>
+    <div id="payload-set_dock_favorites" class="payload" hidden>
+      <label>Favorites (.desktop names, space-separated)<input name="dock_favorites" placeholder="firefox.desktop org.gnome.Nautilus.desktop code.desktop"></label>
+    </div>
+    <button type="submit">Queue task</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Recent tasks</h2>
+  <table class="tasks">
+    <thead><tr><th>When</th><th>Title</th><th>Status</th><th>Exit</th></tr></thead>
+    <tbody>
+      {% for t in tasks %}
+      <tr>
+        <td>{{ t.created }}</td>
+        <td><a href="/tasks/{{ t.task.id }}">{{ t.task.title }}</a></td>
+        <td><span class="status status-{{ t.task.status }}">{{ t.task.status }}</span></td>
+        <td>{{ t.task.exit_code if t.task.exit_code is not none else "—" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No tasks yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

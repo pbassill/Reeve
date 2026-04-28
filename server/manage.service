@@ -1,0 +1,37 @@
+[Unit]
+Description=Manage — central Ubuntu fleet management server
+Documentation=https://github.com/your-org/manage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=manage
+Group=manage
+EnvironmentFile=/etc/manage/manage.env
+WorkingDirectory=/opt/manage/server
+ExecStart=/opt/manage/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 \
+    --port ${MANAGE_PORT} \
+    --proxy-headers \
+    --forwarded-allow-ips '*'
+Restart=always
+RestartSec=5
+SuccessExitStatus=0 3
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/manage
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

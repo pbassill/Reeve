@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash -n agent/install.sh)",
+      "Bash(python -c ' *)",
+      "Bash(pip install *)",
+      "Bash(python -m py_compile server/app/__init__.py server/app/config.py server/app/db.py server/app/models.py server/app/auth.py server/app/ldap_auth.py server/app/schemas.py server/app/utils.py server/app/migrations.py server/app/agent_release.py server/app/api_agents.py server/app/api_admin.py server/app/views.py server/app/admins_views.py server/app/admin_settings_views.py server/app/ws.py server/app/main.py agent/manage-agent.py)"
+    ]
+  }
+}

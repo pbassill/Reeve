@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Groups — Manage{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Groups</h1></header>
+
+<section class="card">
+  <h2>New group</h2>
+  <form method="post" action="/groups/create" class="inline-form">
+    <input name="name" placeholder="Lab-1" required>
+    <input name="description" placeholder="Description (optional)">
+    <button type="submit">Create</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Send a task to a group</h2>
+  <form method="post" action="/tasks/create" class="task-form">
+    <label>Group
+      <select name="target_group_id" required>
+        <option value="">—</option>
+        {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.members|length }})</option>{% endfor %}
+      </select>
+    </label>
+    <label>Task type
+      <select name="type" onchange="document.querySelectorAll('.payload').forEach(p=>p.hidden=true);document.getElementById('payload-'+this.value).hidden=false;">
+        <option value="shell">Run shell command</option>
+        <option value="apt_install">Install apt packages</option>
+        <option value="apt_remove">Remove apt packages</option>
+        <option value="apt_upgrade">Upgrade all packages</option>
+        <option value="reboot">Reboot</option>
+        <option value="set_wallpaper">Set wallpaper (URL)</option>
+      </select>
+    </label>
+    <div id="payload-shell" class="payload"><label>Command<textarea name="command" rows="2"></textarea></label></div>
+    <div id="payload-apt_install" class="payload" hidden><label>Packages<input name="packages"></label></div>
+    <div id="payload-apt_remove" class="payload" hidden><label>Packages<input name="packages_remove"></label></div>
+    <div id="payload-apt_upgrade" class="payload" hidden><p class="muted">Runs apt update && apt upgrade -y.</p></div>
+    <div id="payload-reboot" class="payload" hidden><p class="muted">Reboots all members in 60 seconds.</p></div>
+    <div id="payload-set_wallpaper" class="payload" hidden><label>Image URL<input name="wallpaper_url"></label></div>
+    <button type="submit">Queue for group</button>
+  </form>
+</section>
+
+{% for g in groups %}
+<section class="card">
+  <header class="card-head">
+    <h2>{{ g.name }} <span class="muted">({{ g.members|length }})</span></h2>
+    <form method="post" action="/groups/{{ g.id }}/delete" onsubmit="return confirm('Delete group {{ g.name }}? Members are kept.')"><button class="danger" type="submit">Delete</button></form>
+  </header>
+  {% if g.description %}<p class="muted">{{ g.description }}</p>{% endif %}
+  <form method="post" action="/groups/{{ g.id }}/members" class="members-form">
+    <ul class="members">
+      {% for a in all_agents %}
+      <li>
+        <label>
+          <input type="checkbox" name="agent_ids" value="{{ a.agent_id }}" {% if a in g.members %}checked{% endif %}>
+          {{ a.hostname }} <span class="muted mono">{{ a.ip_address }}</span>
+        </label>
+      </li>
+      {% else %}
+      <li class="empty">No devices enrolled.</li>
+      {% endfor %}
+    </ul>
+    {% if all_agents %}<button type="submit">Save membership</button>{% endif %}
+  </form>
+</section>
+{% else %}
+<p class="empty">No groups yet.</p>
+{% endfor %}
+{% endblock %}

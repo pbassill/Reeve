@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Manage{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if request.session.get('user') %}
+<nav>
+  <a href="/" class="logo">Manage</a>
+  <a href="/devices" class="{% if active == 'devices' %}active{% endif %}">Devices</a>
+  <a href="/groups" class="{% if active == 'groups' %}active{% endif %}">Groups</a>
+  <a href="/tasks" class="{% if active == 'tasks' %}active{% endif %}">Tasks</a>
+  <a href="/enrollment" class="{% if active == 'enrollment' %}active{% endif %}">Enrollment</a>
+  <a href="/admins" class="{% if active == 'admins' %}active{% endif %}">Admins</a>
+  <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Settings</a>
+  <span class="spacer"></span>
+  <span class="user">{{ request.session.user }}</span>
+  <a href="/logout">Sign out</a>
+</nav>
+{% endif %}
+<main>
+{% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

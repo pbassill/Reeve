@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Enrollment — Manage{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Enrollment</h1></header>
+
+<section class="card">
+  <h2>New enrollment token</h2>
+  <form method="post" action="/enrollment/create" class="inline-form">
+    <input name="label" placeholder="Label (e.g. Lab-1 batch)">
+    <select name="default_group_id">
+      <option value="">No default group</option>
+      {% for g in groups %}<option value="{{ g.id }}">Auto-add to {{ g.name }}</option>{% endfor %}
+    </select>
+    <input name="expires_in_hours" type="number" min="1" max="8760" placeholder="Expires in hours (blank = never)">
+    <button type="submit">Generate token</button>
+  </form>
+</section>
+
+{% if new_token %}
+<section class="card highlight">
+  <h2>Token created</h2>
+  <p>Run this on each Ubuntu machine you want to enroll. The token is shown once.</p>
+  <pre class="output">curl -fsSL {{ public_url }}/install.sh | sudo MANAGE_SERVER={{ public_url }} MANAGE_TOKEN={{ new_token }} bash</pre>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Existing tokens</h2>
+  <table class="tasks">
+    <thead><tr><th>Label</th><th>Default group</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for t in tokens %}
+      <tr>
+        <td>{{ t.label or "—" }}</td>
+        <td>{{ t.default_group.name if t.default_group else "—" }}</td>
+        <td>{{ t.created_rel }}</td>
+        <td>{{ t.expires_rel }}</td>
+        <td>{% if t.token.revoked %}<span class="status status-failed">revoked</span>{% elif t.expired %}<span class="status status-failed">expired</span>{% else %}<span class="status status-complete">active</span>{% endif %}</td>
+        <td>
+          {% if not t.token.revoked %}
+          <form method="post" action="/enrollment/{{ t.token.id }}/revoke"><button class="link">Revoke</button></form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">No tokens yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
