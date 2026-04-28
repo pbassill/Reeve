@@ -79,20 +79,82 @@ verify_python_312() {
   [[ "$ver" == "3.12" ]]
 }
 
-# Install Python 3.12 from the host's default apt repos. If 3.12 isn't there
-# (recent Ubuntu releases drop older Pythons from main), fall back to the
-# deadsnakes PPA which maintains every supported CPython.
+# Install Python 3.12, trying three paths in order:
+#   1. Host's default apt repos (works on Ubuntu 22.04 / 24.04)
+#   2. The deadsnakes PPA (works on most Ubuntu LTS releases)
+#   3. uv's standalone Python builds (works on any Linux, including
+#      Ubuntu interim releases that deadsnakes doesn't track yet — e.g.
+#      'resolute' / 25.10).
+# On success, $PYTHON_BIN is set to a working Python 3.12 binary path.
 ensure_python312() {
+  # Try the host's default apt repos first.
   if apt-get install -y --no-install-recommends \
        python3.12 python3.12-venv python3.12-dev; then
-    return 0
+    if verify_python_312 python3.12; then
+      PYTHON_BIN="python3.12"
+      return 0
+    fi
   fi
-  echo "[reevectl] python3.12 not installable from default apt — adding deadsnakes PPA..."
-  apt-get install -y --no-install-recommends software-properties-common gnupg
-  add-apt-repository -y ppa:deadsnakes/ppa
-  apt-get update -qq
-  apt-get install -y --no-install-recommends \
-    python3.12 python3.12-venv python3.12-dev
+  echo "[reevectl] python3.12 not in default apt — trying deadsnakes PPA..."
+  if apt-get install -y --no-install-recommends software-properties-common gnupg \
+     && add-apt-repository -y ppa:deadsnakes/ppa \
+     && apt-get update -qq \
+     && apt-get install -y --no-install-recommends \
+            python3.12 python3.12-venv python3.12-dev; then
+    if verify_python_312 python3.12; then
+      PYTHON_BIN="python3.12"
+      return 0
+    fi
+  fi
+  echo "[reevectl] deadsnakes doesn't ship python3.12 for this Ubuntu release ('$(lsb_release -sc 2>/dev/null || echo unknown)')."
+  # Remove the now-broken deadsnakes source so subsequent `apt update` calls don't 404.
+  rm -f /etc/apt/sources.list.d/deadsnakes-ubuntu-ppa-*.list \
+        /etc/apt/sources.list.d/deadsnakes-ubuntu-ppa-*.sources 2>/dev/null || true
+  echo "[reevectl] Falling back to a standalone Python 3.12 build via uv (Astral)."
+  install_python312_via_uv
+}
+
+# Install Astral's `uv` and use it to fetch a prebuilt CPython 3.12 from
+# python-build-standalone. Stable, distro-independent, works behind any apt.
+install_python312_via_uv() {
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "[reevectl] Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+    if ! command -v uv >/dev/null 2>&1; then
+      # Older installers ignore UV_INSTALL_DIR; uv ends up in $HOME/.local/bin.
+      for cand in /root/.local/bin/uv "$HOME/.local/bin/uv" /root/.cargo/bin/uv; do
+        if [[ -x "$cand" ]]; then
+          install -m 0755 "$cand" /usr/local/bin/uv
+          break
+        fi
+      done
+    fi
+  fi
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "ERROR: uv install failed. See https://astral.sh/uv for manual setup." >&2
+    return 1
+  fi
+  echo "[reevectl] Installing CPython 3.12 via uv (downloads ~30 MB)..."
+  export UV_PYTHON_INSTALL_DIR=/opt/reevectl-python
+  install -d -m 0755 "$UV_PYTHON_INSTALL_DIR"
+  uv python install 3.12
+  local resolved
+  resolved=$(uv python find 3.12 2>/dev/null || true)
+  if [[ -z "$resolved" || ! -x "$resolved" ]]; then
+    resolved=$(find "$UV_PYTHON_INSTALL_DIR" -name 'python3.12' -type f -executable 2>/dev/null | head -n 1)
+  fi
+  if [[ -z "$resolved" || ! -x "$resolved" ]]; then
+    echo "ERROR: uv finished but python3.12 binary not found under $UV_PYTHON_INSTALL_DIR." >&2
+    return 1
+  fi
+  if ! verify_python_312 "$resolved"; then
+    echo "ERROR: uv-installed binary at $resolved is not Python 3.12." >&2
+    return 1
+  fi
+  PYTHON_BIN="$resolved"
+  # Also expose a stable name for sysadmins.
+  ln -sf "$resolved" /usr/local/bin/python3.12
+  echo "[reevectl] uv-installed python3.12 at $resolved (also linked at /usr/local/bin/python3.12)"
 }
 
 if ! verify_python_312 "$PYTHON_BIN"; then
