@@ -112,3 +112,21 @@ class Task(Base):
     title: Mapped[str] = mapped_column(String(255), default="")
 
     agent: Mapped[Agent] = relationship(back_populates="tasks", lazy="joined")
+
+
+class AgentRole(Base):
+    __tablename__ = "agent_roles"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_pk: Mapped[int] = mapped_column(ForeignKey("agents.id", ondelete="CASCADE"), index=True)
+    role_type: Mapped[str] = mapped_column(String(32), index=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="installing")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    installed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    install_task_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    agent: Mapped[Agent] = relationship(lazy="joined")
+    install_task: Mapped[Optional[Task]] = relationship(foreign_keys=[install_task_id], lazy="joined")

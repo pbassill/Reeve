@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}{{ label }} — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>{{ label }}</h1>
+    <div class="muted">on <a href="/devices/{{ role.agent.agent_id }}">{{ role.agent.hostname }}</a></div>
+  </div>
+  <span class="status status-{{ 'complete' if role.status=='installed' else ('failed' if role.status=='failed' else 'running') }}">{{ role.status }}</span>
+</header>
+
+<section class="info-grid">
+  <div><dt>Created</dt><dd>{{ created }}</dd></div>
+  <div><dt>Installed</dt><dd>{{ installed }}</dd></div>
+  <div><dt>Install task</dt><dd>{% if role.install_task_id %}<a href="/tasks/{{ role.install_task_id }}">#{{ role.install_task_id }}</a>{% else %}—{% endif %}</dd></div>
+</section>
+
+<section class="card">
+  <h2>Configuration</h2>
+  <pre class="output">{% for k, v in role.config.items() %}{{ k }} = {{ v }}
+{% endfor %}</pre>
+  <p class="muted">The administrator password is never persisted on the manage server. It was delivered to the agent on its first check-in and immediately scrubbed from the task record.</p>
+</section>
+
+{% if role.role_type == "auth_server" and role.status == "installed" %}
+<section class="card">
+  <h2>Quick reference</h2>
+  <ul>
+    <li>Realm: <code class="mono">{{ role.config.get('realm') }}</code></li>
+    <li>NetBIOS domain: <code class="mono">{{ role.config.get('domain') }}</code></li>
+    <li>To add a user: send a <a href="/devices/{{ role.agent.agent_id }}">shell task</a> like <code class="mono">samba-tool user create alice 'TempPass123!'</code></li>
+    <li>Verify: <code class="mono">samba-tool domain info 127.0.0.1</code></li>
+    <li>Domain-join clients to this server's IP for DNS.</li>
+  </ul>
+</section>
+{% elif role.role_type == "file_server" and role.status == "installed" %}
+<section class="card">
+  <h2>Quick reference</h2>
+  <ul>
+    <li>Mode: <code class="mono">{{ role.config.get('mode') }}</code></li>
+    <li>Shares: <code class="mono">{{ role.config.get('shares_root') }}</code></li>
+    <li>Homes: <code class="mono">{{ role.config.get('homes_root') }}</code></li>
+    <li>Departments: {% for d in role.config.get('departments') or [] %}<span class="tag">{{ d }}</span>{% endfor %}</li>
+    {% if role.config.get('mode') == 'standalone' %}
+    <li>To add a user: <code class="mono">useradd -m alice && smbpasswd -a alice && usermod -aG dept-engineering alice</code></li>
+    {% else %}
+    <li>AD users access shares automatically once they're members of <code class="mono">dept-&lt;name&gt;</code>.</li>
+    {% endif %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <form method="post" action="/roles/{{ role.id }}/delete" onsubmit="return confirm('Remove the role record from Manage? Services on the host will keep running — this just forgets the bookkeeping.')">
+    <button class="danger" type="submit">Remove role record</button>
+  </form>
+</section>
+{% endblock %}

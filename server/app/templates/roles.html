@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Server Roles — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>Server Roles</h1>
+</header>
+
+<section class="card">
+  <h2>Install a role</h2>
+  <p class="muted">
+    Provisions a fully-configured server stack on any enrolled agent in one
+    click. To install on this manage server itself, enroll it as an agent first
+    (run <code>install.sh</code> on this host with an enrollment token).
+  </p>
+  <form method="post" action="/roles/install" class="task-form">
+    <label>Target device
+      <select name="target_agent_id" required>
+        <option value="">— pick a device —</option>
+        {% for a in agents %}<option value="{{ a.agent_id }}">{{ a.hostname }} ({{ a.ip_address }})</option>{% endfor %}
+      </select>
+    </label>
+    <label>Role
+      <select name="role_type" id="role_type" required onchange="document.querySelectorAll('.role-form').forEach(f=>f.hidden=true);document.getElementById('rf-'+this.value).hidden=false;">
+        <option value="">— pick a role —</option>
+        <option value="auth_server">Authentication Server (Samba AD-DC)</option>
+        <option value="file_server">File Server (Samba shares + homes)</option>
+      </select>
+    </label>
+
+    <fieldset id="rf-auth_server" class="role-form" hidden>
+      <legend>Authentication Server</legend>
+      <p class="muted">Stands up a Samba 4 Active Directory Domain Controller with Kerberos and DNS. The host's resolver and services will be reconfigured.</p>
+      <label>Realm (FQDN, uppercase)<input name="realm" placeholder="EXAMPLE.LOCAL"></label>
+      <label>NetBIOS domain (short)<input name="domain" placeholder="EXAMPLE" maxlength="15"></label>
+      <label>Administrator password<input name="admin_password" type="password" minlength="8" autocomplete="new-password"></label>
+      <label>Upstream DNS forwarder<input name="dns_forwarder" value="1.1.1.1"></label>
+    </fieldset>
+
+    <fieldset id="rf-file_server" class="role-form" hidden>
+      <legend>File Server</legend>
+      <label>Mode
+        <select name="mode" onchange="document.getElementById('fs-domain').hidden = this.value !== 'domain'">
+          <option value="standalone">Standalone (local Unix users)</option>
+          <option value="domain">Domain-joined (uses the AD created above)</option>
+        </select>
+      </label>
+      <label>Departments (space-separated, lowercase)<input name="departments" placeholder="engineering finance hr"></label>
+      <label>Shares root<input name="shares_root" value="/srv/shares"></label>
+      <label>Home directories root<input name="homes_root" value="/srv/homes"></label>
+      <fieldset id="fs-domain" hidden>
+        <legend>Domain join</legend>
+        <label>Realm<input name="realm" placeholder="EXAMPLE.LOCAL"></label>
+        <label>NetBIOS domain<input name="domain" placeholder="EXAMPLE"></label>
+        <label>Administrator password (for join)<input name="join_password" type="password" autocomplete="new-password"></label>
+        <label>DC IP (optional, sets resolver)<input name="dc_ip" placeholder="10.0.0.10"></label>
+      </fieldset>
+    </fieldset>
+
+    <button type="submit">Install role</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Installed / installing roles</h2>
+  <table class="tasks">
+    <thead><tr><th>Role</th><th>Device</th><th>Status</th><th>Created</th><th>Installed</th><th></th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><a href="/roles/{{ r.row.id }}">{{ r.label }}</a></td>
+        <td><a href="/devices/{{ r.row.agent.agent_id }}">{{ r.row.agent.hostname }}</a></td>
+        <td><span class="status status-{{ 'complete' if r.row.status=='installed' else ('failed' if r.row.status=='failed' else 'running') }}">{{ r.row.status }}</span></td>
+        <td>{{ r.created }}</td>
+        <td>{{ r.installed }}</td>
+        <td>
+          {% if r.row.install_task_id %}<a href="/tasks/{{ r.row.install_task_id }}">log</a>{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">No roles installed yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

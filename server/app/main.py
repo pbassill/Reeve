@@ -15,6 +15,7 @@ from .auth import hash_password
 from .config import settings
 from .db import SessionLocal, engine
 from .models import Admin, Base
+from .roles_views import router as roles_router
 from .views import router as views_router
 from .ws import router as ws_router
 
@@ -35,6 +36,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(views_router)
 app.include_router(admins_router)
 app.include_router(admin_settings_router)
+app.include_router(roles_router)
 app.include_router(agents_router)
 app.include_router(admin_router)
 app.include_router(ws_router)

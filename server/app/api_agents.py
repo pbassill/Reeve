@@ -5,10 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from . import agent_release
+from .api_admin import TASK_PAYLOAD_SECRETS
 from .auth import generate_token, hash_token, require_agent
 from .config import settings
 from .db import get_db
-from .models import Agent, EnrollmentToken, Task
+from .models import Agent, AgentRole, EnrollmentToken, Task
 from .schemas import (
     AgentUpdate,
     CheckinRequest,
@@ -97,7 +98,14 @@ def checkin(
     for t in pending:
         t.status = "running"
         t.dispatched_at = now
-        out.append(TaskOut(id=t.id, type=t.type, payload=t.payload or {}))
+        full_payload = t.payload or {}
+        out.append(TaskOut(id=t.id, type=t.type, payload=full_payload))
+        # Scrub secrets from the persisted record now that the agent has them.
+        if isinstance(full_payload, dict) and any(k in full_payload for k in TASK_PAYLOAD_SECRETS):
+            t.payload = {
+                k: ("***redacted***" if k in TASK_PAYLOAD_SECRETS else v)
+                for k, v in full_payload.items()
+            }
     db.commit()
 
     # Notify connected dashboards.
@@ -138,5 +146,16 @@ def task_result(
     task.stderr = truncate_output(req.stderr)
     task.status = "complete" if req.exit_code == 0 else "failed"
     task.completed_at = datetime.now(timezone.utc)
+
+    # Mirror role-install task results onto the AgentRole record.
+    if task.type in ("install_auth_server", "install_file_server"):
+        role = db.query(AgentRole).filter_by(install_task_id=task.id).first()
+        if role:
+            if req.exit_code == 0:
+                role.status = "installed"
+                role.installed_at = datetime.now(timezone.utc)
+            else:
+                role.status = "failed"
+
     db.commit()
     return {"ok": True}

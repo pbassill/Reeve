@@ -19,7 +19,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.3.0"
 CONFIG_PATH = Path(os.environ.get("MANAGE_CONFIG", "/etc/manage-agent/config.json"))
 DEFAULT_INTERVAL = 30
 
@@ -342,7 +342,272 @@ def execute_task(task: dict[str, Any], agent_state: dict[str, Any]) -> tuple[int
     if t == "self_update":
         agent_state["force_self_update"] = True
         return 0, "self-update will run after this checkin completes", ""
+    if t == "install_auth_server":
+        return _install_auth_server(p)
+    if t == "install_file_server":
+        return _install_file_server(p)
     return 1, "", f"unknown task type {t}"
+
+
+# --- Server roles: one-click installs --------------------------------------
+
+_AUTH_SERVER_SCRIPT = r"""
+set -euo pipefail
+: "${REALM:?REALM required}"
+: "${DOMAIN:?DOMAIN required}"
+: "${ADMIN_PASSWORD:?ADMIN_PASSWORD required}"
+: "${DNS_FORWARDER:=1.1.1.1}"
+
+LOWER_REALM="${REALM,,}"
+
+# Idempotency: if Samba is already provisioned, just make sure it's running.
+if [ -f /var/lib/samba/private/sam.ldb ]; then
+  echo "[role:auth_server] Already provisioned (sam.ldb present)."
+  systemctl unmask samba-ad-dc 2>/dev/null || true
+  systemctl enable --now samba-ad-dc
+  systemctl is-active --quiet samba-ad-dc && echo "[role:auth_server] samba-ad-dc is active"
+  samba-tool domain info 127.0.0.1 || true
+  exit 0
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Avoid interactive krb5 prompt during apt install.
+{
+  echo "krb5-config krb5-config/default_realm string ${REALM}"
+  echo "krb5-config krb5-config/admin_server string ${REALM}"
+  echo "krb5-config krb5-config/kerberos_servers string ${REALM}"
+} | debconf-set-selections
+
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+    samba samba-dsdb-modules samba-vfs-modules \
+    winbind libnss-winbind libpam-winbind \
+    krb5-user krb5-config \
+    dnsutils chrony
+
+# AD-DC must run alone — disable conflicting services. systemd-resolved
+# stays disabled because the AD-DC is the DNS server on 53.
+for svc in smbd nmbd winbind systemd-resolved; do
+  systemctl disable --now "$svc" 2>/dev/null || true
+done
+
+# Stash existing smb.conf so the provisioner writes a fresh one.
+[ -f /etc/samba/smb.conf ] && \
+  mv /etc/samba/smb.conf "/etc/samba/smb.conf.bak.$(date +%s)" || true
+
+samba-tool domain provision \
+  --use-rfc2307 \
+  --realm="${REALM}" \
+  --domain="${DOMAIN}" \
+  --server-role=dc \
+  --dns-backend=SAMBA_INTERNAL \
+  --adminpass="${ADMIN_PASSWORD}"
+
+# Adopt the provisioner's krb5.conf system-wide.
+install -m 0644 /var/lib/samba/private/krb5.conf /etc/krb5.conf
+
+# Configure the upstream DNS forwarder.
+if grep -qE '^[[:space:]]*dns forwarder' /etc/samba/smb.conf; then
+  sed -i "s|^[[:space:]]*dns forwarder.*|        dns forwarder = ${DNS_FORWARDER}|" /etc/samba/smb.conf
+else
+  sed -i "/^\[global\]/a\\        dns forwarder = ${DNS_FORWARDER}" /etc/samba/smb.conf
+fi
+
+# Point this host's resolver at itself so domain joins succeed.
+rm -f /etc/resolv.conf
+cat > /etc/resolv.conf <<EOF
+nameserver 127.0.0.1
+search ${LOWER_REALM}
+EOF
+chattr +i /etc/resolv.conf 2>/dev/null || true
+
+systemctl unmask samba-ad-dc 2>/dev/null || true
+systemctl enable --now samba-ad-dc
+
+# Wait briefly for the AD services to come up.
+for _ in $(seq 1 20); do
+  if samba-tool domain info 127.0.0.1 >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+samba-tool domain info 127.0.0.1
+echo "[role:auth_server] Provisioned realm ${REALM} (NetBIOS ${DOMAIN})"
+"""
+
+
+_FILE_SERVER_SCRIPT = r"""
+set -euo pipefail
+: "${MODE:=standalone}"
+: "${SHARES_ROOT:=/srv/shares}"
+: "${HOMES_ROOT:=/srv/homes}"
+DEPARTMENTS="${DEPARTMENTS:-}"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+
+if [ "${MODE}" = "domain" ]; then
+  : "${REALM:?REALM required for domain mode}"
+  : "${DOMAIN:?DOMAIN required for domain mode}"
+  : "${JOIN_PASSWORD:?JOIN_PASSWORD required for domain mode}"
+  apt-get install -y --no-install-recommends \
+      samba winbind libnss-winbind libpam-winbind \
+      krb5-user krb5-config acl
+else
+  apt-get install -y --no-install-recommends samba acl
+fi
+
+mkdir -p "${SHARES_ROOT}" "${HOMES_ROOT}"
+chmod 0755 "${SHARES_ROOT}" "${HOMES_ROOT}"
+
+# Per-department directory + group.
+for dept in ${DEPARTMENTS}; do
+  mkdir -p "${SHARES_ROOT}/${dept}"
+  groupadd -f "dept-${dept}"
+  chgrp "dept-${dept}" "${SHARES_ROOT}/${dept}"
+  chmod 2770 "${SHARES_ROOT}/${dept}"  # setgid: inherit group on new files
+done
+
+SHARES_BLOCK=""
+for dept in ${DEPARTMENTS}; do
+  SHARES_BLOCK+="
+[${dept}]
+   comment = ${dept} share
+   path = ${SHARES_ROOT}/${dept}
+   browseable = yes
+   read only = no
+   create mask = 0660
+   directory mask = 0770
+   force group = dept-${dept}
+   valid users = @\"dept-${dept}\"
+"
+done
+
+if [ "${MODE}" = "domain" ]; then
+  cat > /etc/krb5.conf <<EOF
+[libdefaults]
+  default_realm = ${REALM}
+  dns_lookup_realm = false
+  dns_lookup_kdc = true
+EOF
+
+  cat > /etc/samba/smb.conf <<EOF
+[global]
+   workgroup = ${DOMAIN}
+   realm = ${REALM}
+   security = ADS
+   server string = Manage File Server
+   log file = /var/log/samba/log.%m
+   max log size = 1000
+
+   template homedir = ${HOMES_ROOT}/%U
+   template shell = /bin/bash
+
+   winbind use default domain = yes
+   winbind enum users = yes
+   winbind enum groups = yes
+   winbind refresh tickets = yes
+
+   idmap config * : backend = tdb
+   idmap config * : range = 3000-7999
+   idmap config ${DOMAIN} : backend = rid
+   idmap config ${DOMAIN} : range = 10000-99999
+
+   vfs objects = acl_xattr
+   map acl inherit = yes
+   store dos attributes = yes
+
+[homes]
+   comment = User Home
+   browseable = no
+   read only = no
+   create mask = 0700
+   directory mask = 0700
+   valid users = %D\\%S
+
+${SHARES_BLOCK}
+EOF
+
+  # nsswitch: resolve AD users via winbind.
+  sed -i 's/^passwd:.*/passwd:         files systemd winbind/' /etc/nsswitch.conf
+  sed -i 's/^group:.*/group:          files systemd winbind/' /etc/nsswitch.conf
+
+  if [ -n "${DC_IP:-}" ]; then
+    rm -f /etc/resolv.conf
+    cat > /etc/resolv.conf <<EOF
+nameserver ${DC_IP}
+search ${REALM,,}
+EOF
+  fi
+
+  if ! net ads testjoin 2>/dev/null | grep -q OK; then
+    echo "${JOIN_PASSWORD}" | net ads join -U "administrator%${JOIN_PASSWORD}" || true
+  fi
+
+  systemctl enable --now smbd nmbd winbind
+  systemctl restart smbd nmbd winbind
+  echo "[role:file_server] Domain-joined Samba file server up (realm=${REALM})"
+else
+  cat > /etc/samba/smb.conf <<EOF
+[global]
+   workgroup = WORKGROUP
+   server string = Manage File Server
+   server role = standalone server
+   security = user
+   passdb backend = tdbsam
+   map to guest = Bad User
+   log file = /var/log/samba/log.%m
+   max log size = 1000
+
+[homes]
+   comment = Home Directories
+   browseable = no
+   read only = no
+   create mask = 0700
+   directory mask = 0700
+   valid users = %S
+
+${SHARES_BLOCK}
+EOF
+
+  systemctl enable --now smbd nmbd
+  systemctl restart smbd nmbd
+  echo "[role:file_server] Standalone Samba file server up"
+fi
+
+testparm -s /etc/samba/smb.conf >/dev/null
+echo "[role:file_server] Departments: ${DEPARTMENTS:-(none)}"
+"""
+
+
+def _install_auth_server(p: dict[str, Any]) -> tuple[int, str, str]:
+    env = {
+        **os.environ,
+        "REALM": (p.get("realm") or "").upper(),
+        "DOMAIN": (p.get("domain") or "").upper(),
+        "ADMIN_PASSWORD": p.get("admin_password") or "",
+        "DNS_FORWARDER": p.get("dns_forwarder") or "1.1.1.1",
+    }
+    if not env["REALM"] or not env["DOMAIN"] or not env["ADMIN_PASSWORD"]:
+        return 1, "", "missing required parameters"
+    return _run(_AUTH_SERVER_SCRIPT, shell=True, env=env, timeout=1800)
+
+
+def _install_file_server(p: dict[str, Any]) -> tuple[int, str, str]:
+    env = {
+        **os.environ,
+        "MODE": p.get("mode") or "standalone",
+        "DEPARTMENTS": " ".join(p.get("departments") or []),
+        "SHARES_ROOT": p.get("shares_root") or "/srv/shares",
+        "HOMES_ROOT": p.get("homes_root") or "/srv/homes",
+    }
+    if env["MODE"] == "domain":
+        if not p.get("realm") or not p.get("domain") or not p.get("join_password"):
+            return 1, "", "domain mode requires realm, domain, and join_password"
+        env["REALM"] = p["realm"].upper()
+        env["DOMAIN"] = p["domain"].upper()
+        env["JOIN_PASSWORD"] = p["join_password"]
+        env["DC_IP"] = p.get("dc_ip") or ""
+    return _run(_FILE_SERVER_SCRIPT, shell=True, env=env, timeout=1800)
 
 
 def _ensure_flatpak() -> tuple[int, str, str]:

@@ -1,3 +1,4 @@
+import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .auth import require_admin
 from .db import get_db
-from .models import Admin, Agent, EnrollmentToken, Group, Task
+from .models import Admin, Agent, AgentRole, EnrollmentToken, Group, Task
 from .schemas import (
     CreateEnrollmentTokenRequest,
     CreateGroupRequest,
@@ -38,7 +39,14 @@ VALID_TASK_TYPES = {
     "set_wallpaper_user",
     "set_dock_favorites",
     "self_update",
+    "install_auth_server",
+    "install_file_server",
 }
+
+# Task payload keys that are secrets — scrubbed from the DB row right after
+# the agent picks the task up on its first check-in, so the password never
+# sits at rest on the manage server.
+TASK_PAYLOAD_SECRETS = {"admin_password", "join_password"}
 
 
 def _validate_payload(task_type: str, payload: dict[str, Any]) -> None:
@@ -72,6 +80,71 @@ def _validate_payload(task_type: str, payload: dict[str, Any]) -> None:
         favs = payload.get("favorites")
         if not isinstance(favs, list) or not all(isinstance(f, str) and f for f in favs):
             raise HTTPException(status_code=400, detail="set_dock_favorites requires 'favorites' list")
+    elif task_type == "install_auth_server":
+        _validate_role_auth_server(payload)
+    elif task_type == "install_file_server":
+        _validate_role_file_server(payload)
+
+
+_REALM_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*(\.[A-Z0-9][A-Z0-9-]*)+$")
+_NETBIOS_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]{0,14}$")
+_DEPT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+_IP_RE = re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$")
+
+
+def _validate_role_auth_server(p: dict[str, Any]) -> None:
+    realm = (p.get("realm") or "").strip().upper()
+    domain = (p.get("domain") or "").strip().upper()
+    pwd = p.get("admin_password") or ""
+    fwd = (p.get("dns_forwarder") or "1.1.1.1").strip()
+    if not _REALM_RE.match(realm):
+        raise HTTPException(status_code=400, detail="realm must look like EXAMPLE.LOCAL")
+    if not _NETBIOS_RE.match(domain):
+        raise HTTPException(status_code=400, detail="domain must be a NetBIOS name (1-15 chars, alphanumeric)")
+    if len(pwd) < 8:
+        raise HTTPException(status_code=400, detail="admin_password must be at least 8 characters")
+    if not _IP_RE.match(fwd):
+        raise HTTPException(status_code=400, detail="dns_forwarder must be a valid IPv4 address")
+    p["realm"] = realm
+    p["domain"] = domain
+    p["dns_forwarder"] = fwd
+
+
+def _validate_role_file_server(p: dict[str, Any]) -> None:
+    mode = (p.get("mode") or "standalone").strip().lower()
+    if mode not in ("standalone", "domain"):
+        raise HTTPException(status_code=400, detail="mode must be 'standalone' or 'domain'")
+    departments = p.get("departments") or []
+    if not isinstance(departments, list) or not all(_DEPT_RE.match(d or "") for d in departments):
+        raise HTTPException(
+            status_code=400,
+            detail="departments must be a list of lowercase names (a-z 0-9 -, max 32 chars)",
+        )
+    homes_root = p.get("homes_root") or "/srv/homes"
+    shares_root = p.get("shares_root") or "/srv/shares"
+    if not isinstance(homes_root, str) or not homes_root.startswith("/"):
+        raise HTTPException(status_code=400, detail="homes_root must be an absolute path")
+    if not isinstance(shares_root, str) or not shares_root.startswith("/"):
+        raise HTTPException(status_code=400, detail="shares_root must be an absolute path")
+    p["mode"] = mode
+    p["homes_root"] = homes_root
+    p["shares_root"] = shares_root
+    p["departments"] = list(dict.fromkeys(departments))  # dedupe, preserve order
+    if mode == "domain":
+        realm = (p.get("realm") or "").strip().upper()
+        domain = (p.get("domain") or "").strip().upper()
+        if not _REALM_RE.match(realm):
+            raise HTTPException(status_code=400, detail="realm required for domain mode (EXAMPLE.LOCAL)")
+        if not _NETBIOS_RE.match(domain):
+            raise HTTPException(status_code=400, detail="domain (NetBIOS name) required for domain mode")
+        if len(p.get("join_password") or "") < 1:
+            raise HTTPException(status_code=400, detail="join_password required for domain mode")
+        dc_ip = (p.get("dc_ip") or "").strip()
+        if dc_ip and not _IP_RE.match(dc_ip):
+            raise HTTPException(status_code=400, detail="dc_ip must be a valid IPv4 address")
+        p["realm"] = realm
+        p["domain"] = domain
+        p["dc_ip"] = dc_ip
 
 
 def _resolve_targets(req: CreateTaskRequest, db: Session) -> list[Agent]:
@@ -138,6 +211,12 @@ def _default_title(task_type: str, payload: dict[str, Any]) -> str:
         return f"gsettings {payload.get('schema', '')} {payload.get('key', '')}"
     if task_type == "set_dock_favorites":
         return f"dock favorites ({len(payload.get('favorites', []))})"
+    if task_type == "install_auth_server":
+        return f"install auth server (realm={payload.get('realm', '')})"
+    if task_type == "install_file_server":
+        mode = payload.get("mode", "standalone")
+        n = len(payload.get("departments") or [])
+        return f"install file server ({mode}, {n} dept(s))"
     return task_type
 
 
@@ -185,6 +264,89 @@ def update_group_members(
     group.members = agents
     db.commit()
     return {"ok": True, "count": len(agents)}
+
+
+def install_role(
+    *,
+    role_type: str,
+    payload: dict[str, Any],
+    target_agent_id: str,
+    admin_username: str,
+    db: Session,
+) -> AgentRole:
+    """Shared helper: validate, create the install task, and the AgentRole row.
+
+    Used by both the JSON API (`POST /api/admin/roles`) and the form view (`POST /roles/install`).
+    """
+    if role_type == "auth_server":
+        task_type = "install_auth_server"
+    elif role_type == "file_server":
+        task_type = "install_file_server"
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown role_type {role_type}")
+    _validate_payload(task_type, payload)
+
+    agent = db.query(Agent).filter_by(agent_id=target_agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Target agent not found")
+
+    title = _default_title(task_type, payload)
+    task = Task(
+        agent_pk=agent.id,
+        type=task_type,
+        payload=payload,
+        created_by=admin_username,
+        title=title,
+    )
+    db.add(task)
+    db.flush()
+
+    # Persist a sanitized copy on the AgentRole — never store passwords here.
+    safe_config = {k: v for k, v in payload.items() if k not in TASK_PAYLOAD_SECRETS}
+    role = AgentRole(
+        agent_pk=agent.id,
+        role_type=role_type,
+        config=safe_config,
+        status="installing",
+        install_task_id=task.id,
+    )
+    db.add(role)
+    db.commit()
+    return role
+
+
+@router.post("/roles")
+def api_install_role(
+    body: dict,
+    admin: Admin = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    role = install_role(
+        role_type=body.get("role_type", ""),
+        payload=body.get("payload", {}) or {},
+        target_agent_id=body.get("target_agent_id", ""),
+        admin_username=admin.username,
+        db=db,
+    )
+    return {"id": role.id, "task_id": role.install_task_id, "status": role.status}
+
+
+@router.delete("/roles/{role_id}")
+def delete_role_record(
+    role_id: int,
+    admin: Admin = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Removes the role record only — does NOT uninstall services on the host.
+
+    To actually uninstall, send a `shell` task with the appropriate apt purge.
+    """
+    role = db.get(AgentRole, role_id)
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    db.delete(role)
+    db.commit()
+    return {"ok": True}
 
 
 @router.delete("/agents/{agent_id}")
