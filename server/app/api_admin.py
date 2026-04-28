@@ -43,14 +43,20 @@ VALID_TASK_TYPES = {
     "install_file_server",
     "install_print_server",
     "install_dhcp_dns",
+    "install_security_server",
     "check_compliance",
     "inventory_refresh",
     "open_terminal",
+    "set_apt_mirror",
+    "set_clamav_mirror",
+    "set_dns_servers",
+    "set_log_forwarding",
+    "set_proxy",
 }
 
 # Task payload keys that are secrets — scrubbed from the DB row right after
 # the agent picks the task up on its first check-in, so the password never
-# sits at rest on the manage server.
+# sits at rest on the reevectl server.
 TASK_PAYLOAD_SECRETS = {"admin_password", "join_password"}
 
 
@@ -93,6 +99,18 @@ def _validate_payload(task_type: str, payload: dict[str, Any]) -> None:
         _validate_role_print_server(payload)
     elif task_type == "install_dhcp_dns":
         _validate_role_dhcp_dns(payload)
+    elif task_type == "install_security_server":
+        _validate_role_security_server(payload)
+    elif task_type == "set_apt_mirror":
+        _validate_set_apt_mirror(payload)
+    elif task_type == "set_clamav_mirror":
+        _validate_set_clamav_mirror(payload)
+    elif task_type == "set_dns_servers":
+        _validate_set_dns_servers(payload)
+    elif task_type == "set_log_forwarding":
+        _validate_set_log_forwarding(payload)
+    elif task_type == "set_proxy":
+        _validate_set_proxy(payload)
 
 
 _REALM_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*(\.[A-Z0-9][A-Z0-9-]*)+$")
@@ -117,6 +135,95 @@ def _validate_role_auth_server(p: dict[str, Any]) -> None:
     p["realm"] = realm
     p["domain"] = domain
     p["dns_forwarder"] = fwd
+
+
+def _validate_role_security_server(p: dict[str, Any]) -> None:
+    # All the DHCP/DNS validation, plus feature toggles + sources.
+    _validate_role_dhcp_dns(p)
+    p["enable_blocklist"] = bool(p.get("enable_blocklist", True))
+    p["enable_squid"] = bool(p.get("enable_squid", True))
+    p["enable_apt_mirror"] = bool(p.get("enable_apt_mirror", True))
+    p["enable_clamav_mirror"] = bool(p.get("enable_clamav_mirror", True))
+    p["enable_log_server"] = bool(p.get("enable_log_server", True))
+
+    blocklist_urls = p.get("blocklist_urls") or [
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    ]
+    if isinstance(blocklist_urls, str):
+        blocklist_urls = [u.strip() for u in blocklist_urls.splitlines() if u.strip()]
+    if not isinstance(blocklist_urls, list) or not all(isinstance(u, str) for u in blocklist_urls):
+        raise HTTPException(status_code=400, detail="blocklist_urls must be a list of URLs")
+    for u in blocklist_urls:
+        if not (u.startswith("http://") or u.startswith("https://")):
+            raise HTTPException(status_code=400, detail=f"blocklist URL must start with http(s): {u}")
+    p["blocklist_urls"] = blocklist_urls
+
+    squid_block = p.get("squid_block_domains") or []
+    if isinstance(squid_block, str):
+        squid_block = [d.strip() for d in squid_block.replace(",", " ").split() if d.strip()]
+    if not isinstance(squid_block, list) or not all(isinstance(d, str) for d in squid_block):
+        raise HTTPException(status_code=400, detail="squid_block_domains must be a list of domains")
+    p["squid_block_domains"] = squid_block
+
+    p["squid_port"] = int(p.get("squid_port") or 3128)
+    if not (1 <= p["squid_port"] <= 65535):
+        raise HTTPException(status_code=400, detail="squid_port out of range")
+
+    codename = (p.get("ubuntu_codename") or "").strip().lower()
+    if codename and not codename.isalpha():
+        raise HTTPException(status_code=400, detail="ubuntu_codename must be alphabetic (e.g. noble)")
+    p["ubuntu_codename"] = codename or "noble"
+    p["mirror_components"] = (p.get("mirror_components") or "main restricted universe multiverse").strip()
+    p["log_retention_days"] = int(p.get("log_retention_days") or 30)
+
+
+def _validate_set_apt_mirror(p: dict[str, Any]) -> None:
+    url = (p.get("url") or "").strip()
+    codename = (p.get("codename") or "").strip().lower()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="set_apt_mirror requires http(s) url")
+    if codename and not codename.isalpha():
+        raise HTTPException(status_code=400, detail="codename must be alphabetic")
+    components = (p.get("components") or "main restricted universe multiverse").strip()
+    p.update(url=url, codename=codename, components=components)
+
+
+def _validate_set_clamav_mirror(p: dict[str, Any]) -> None:
+    url = (p.get("url") or "").strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="set_clamav_mirror requires http(s) url")
+    p["url"] = url
+
+
+def _validate_set_dns_servers(p: dict[str, Any]) -> None:
+    servers = p.get("servers") or []
+    if not isinstance(servers, list) or not servers:
+        raise HTTPException(status_code=400, detail="servers must be a non-empty list of IPs")
+    for s in servers:
+        if not isinstance(s, str) or not _IP_RE.match(s):
+            raise HTTPException(status_code=400, detail=f"invalid IP {s!r}")
+    p["search_domain"] = (p.get("search_domain") or "").strip()
+
+
+def _validate_set_log_forwarding(p: dict[str, Any]) -> None:
+    server = (p.get("server") or "").strip()
+    if not _IP_RE.match(server) and "." not in server:
+        raise HTTPException(status_code=400, detail="server must be an IP or hostname")
+    proto = (p.get("protocol") or "udp").lower()
+    if proto not in ("udp", "tcp"):
+        raise HTTPException(status_code=400, detail="protocol must be udp or tcp")
+    port = int(p.get("port") or 514)
+    p.update(server=server, protocol=proto, port=port)
+
+
+def _validate_set_proxy(p: dict[str, Any]) -> None:
+    url = (p.get("proxy_url") or "").strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="proxy_url must start with http(s)")
+    no_proxy = p.get("no_proxy") or "localhost,127.0.0.1,::1"
+    if not isinstance(no_proxy, str):
+        raise HTTPException(status_code=400, detail="no_proxy must be a string")
+    p.update(proxy_url=url, no_proxy=no_proxy)
 
 
 def _validate_role_print_server(p: dict[str, Any]) -> None:
@@ -257,6 +364,18 @@ def _default_title(task_type: str, payload: dict[str, Any]) -> str:
         return "install print server (CUPS)"
     if task_type == "install_dhcp_dns":
         return f"install DHCP+DNS ({payload.get('interface', 'iface')}, subnet={payload.get('subnet', '')})"
+    if task_type == "install_security_server":
+        return f"install Security Server ({payload.get('interface', 'iface')})"
+    if task_type == "set_apt_mirror":
+        return f"point apt at {payload.get('url', '')}"
+    if task_type == "set_clamav_mirror":
+        return f"point clamav at {payload.get('url', '')}"
+    if task_type == "set_dns_servers":
+        return f"set DNS servers: {' '.join(payload.get('servers', []))}"
+    if task_type == "set_log_forwarding":
+        return f"forward logs to {payload.get('server', '')}:{payload.get('port', 514)}"
+    if task_type == "set_proxy":
+        return f"set http(s) proxy: {payload.get('proxy_url', '')}"
     if task_type == "check_compliance":
         return f"compliance check (policy {payload.get('policy_id', '?')})"
     if task_type == "inventory_refresh":
@@ -328,7 +447,7 @@ def install_role(
         "auth_server": "install_auth_server",
         "file_server": "install_file_server",
         "print_server": "install_print_server",
-        "dhcp_dns": "install_dhcp_dns",
+        "security_server": "install_security_server",
     }
     task_type = role_to_task.get(role_type)
     if not task_type:

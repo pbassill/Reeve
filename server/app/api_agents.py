@@ -136,7 +136,7 @@ def checkin(
         update = AgentUpdate(
             version=release["version"],
             sha256=release["sha256"],
-            url="/agent/manage-agent.py",
+            url="/agent/reevectl-agent.py",
         )
 
     return CheckinResponse(

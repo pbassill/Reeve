@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Server Roles — Manage{% endblock %}
+{% block title %}Server Roles — reevectl{% endblock %}
 {% block content %}
 <header class="page-head">
   <h1>Server Roles</h1>
@@ -9,7 +9,7 @@
   <h2>Install a role</h2>
   <p class="muted">
     Provisions a fully-configured server stack on any enrolled agent in one
-    click. To install on this manage server itself, enroll it as an agent first
+    click. To install on this reevectl server itself, enroll it as an agent first
     (run <code>install.sh</code> on this host with an enrollment token).
   </p>
   <form method="post" action="/roles/install" class="task-form">
@@ -25,7 +25,7 @@
         <option value="auth_server">Authentication Server (Samba AD-DC)</option>
         <option value="file_server">File Server (Samba shares + homes)</option>
         <option value="print_server">Print Server (CUPS)</option>
-        <option value="dhcp_dns">DHCP + DNS (dnsmasq)</option>
+        <option value="security_server">Security Server (DHCP+DNS, blocklists, web proxy, apt + clamav mirror, central logs)</option>
       </select>
     </label>
 
@@ -65,9 +65,17 @@
       <label>Local admin user (added to <code>lpadmin</code>)<input name="admin_username" placeholder="cupsadmin"></label>
     </fieldset>
 
-    <fieldset id="rf-dhcp_dns" class="role-form" hidden>
-      <legend>DHCP + DNS (dnsmasq)</legend>
-      <p class="muted">Installs dnsmasq, disables systemd-resolved, configures a DHCP scope and forwarding DNS resolver. Useful as the lab/branch-office server.</p>
+    <fieldset id="rf-security_server" class="role-form" hidden>
+      <legend>Security Server</legend>
+      <p class="muted">
+        The lab/branch-office "everything box": DHCP + DNS (dnsmasq), Pi-hole-style
+        domain blocklists for ads + malware, Squid forward proxy, a local Ubuntu apt
+        mirror so the fleet doesn't all hit the internet, a ClamAV signature mirror,
+        and a central rsyslog endpoint. <strong>The apt mirror initial sync runs in
+        the background and may consume 50–200 GB of disk and several hours.</strong>
+      </p>
+
+      <h3>Network (DHCP + DNS)</h3>
       <label>Interface<input name="interface" placeholder="eth0"></label>
       <label>Subnet<input name="subnet" placeholder="192.168.50.0"></label>
       <label>Netmask<input name="netmask" value="255.255.255.0"></label>
@@ -76,6 +84,23 @@
       <label>Gateway (advertised to clients)<input name="gateway" placeholder="192.168.50.1"></label>
       <label>Upstream DNS forwarder<input name="upstream_dns" value="1.1.1.1"></label>
       <label>Local domain<input name="domain" value="lan"></label>
+
+      <h3>Services</h3>
+      <label><input type="checkbox" name="enable_blocklist" checked> DNS blocklist (Pi-hole-style)</label>
+      <label>Blocklist source URLs (one per line)<textarea name="blocklist_urls" rows="3" class="mono">https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts</textarea></label>
+
+      <label><input type="checkbox" name="enable_squid" checked> Squid web proxy (forward, with site filtering)</label>
+      <label>Squid listen port<input name="squid_port" type="number" value="3128" min="1" max="65535"></label>
+      <label>Squid block-list domains (space- or comma-separated)<textarea name="squid_block_domains" rows="2" placeholder="badsite.example evil.example"></textarea></label>
+
+      <label><input type="checkbox" name="enable_apt_mirror" checked> Local Ubuntu apt mirror</label>
+      <label>Ubuntu codename to mirror<input name="ubuntu_codename" value="noble" placeholder="noble / jammy / focal"></label>
+      <label>Components<input name="mirror_components" value="main restricted universe multiverse"></label>
+
+      <label><input type="checkbox" name="enable_clamav_mirror" checked> ClamAV signature mirror</label>
+
+      <label><input type="checkbox" name="enable_log_server" checked> Central rsyslog server (UDP+TCP 514)</label>
+      <label>Log retention (days)<input name="log_retention_days" type="number" value="30" min="1" max="3650"></label>
     </fieldset>
 
     <button type="submit">Install role</button>

@@ -1,18 +1,18 @@
 [Unit]
-Description=Manage — central Ubuntu fleet management server
-Documentation=https://github.com/your-org/manage
+Description=reevectl — central Ubuntu fleet management server
+Documentation=https://github.com/your-org/reevectl
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=manage
-Group=manage
-EnvironmentFile=/etc/manage/manage.env
-WorkingDirectory=/opt/manage/server
-ExecStart=/opt/manage/.venv/bin/uvicorn app.main:app \
+User=reevectl
+Group=reevectl
+EnvironmentFile=/etc/reevectl/reevectl.env
+WorkingDirectory=/opt/reevectl/server
+ExecStart=/opt/reevectl/.venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 \
-    --port ${MANAGE_PORT} \
+    --port ${REEVECTL_PORT} \
     --proxy-headers \
     --forwarded-allow-ips '*'
 Restart=always
@@ -26,7 +26,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/manage
+ReadWritePaths=/var/lib/reevectl
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 MemoryDenyWriteExecute=false

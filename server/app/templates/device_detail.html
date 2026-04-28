@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ agent.hostname }} — Manage{% endblock %}
+{% block title %}{{ agent.hostname }} — reevectl{% endblock %}
 {% block content %}
 <header class="page-head">
   <div>
@@ -11,7 +11,7 @@
   </div>
   <div class="row-actions">
     <form method="post" action="/devices/{{ agent.agent_id }}/terminal"><button type="submit">Open terminal</button></form>
-    <form method="post" action="/devices/{{ agent.agent_id }}/delete" onsubmit="return confirm('Remove this device from Manage? It will need to re-enroll to come back.')">
+    <form method="post" action="/devices/{{ agent.agent_id }}/delete" onsubmit="return confirm('Remove this device from reevectl? It will need to re-enroll to come back.')">
       <button class="danger" type="submit">Remove device</button>
     </form>
   </div>

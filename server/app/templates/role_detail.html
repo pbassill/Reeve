@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ label }} — Manage{% endblock %}
+{% block title %}{{ label }} — reevectl{% endblock %}
 {% block content %}
 <header class="page-head">
   <div>
@@ -19,7 +19,7 @@
   <h2>Configuration</h2>
   <pre class="output">{% for k, v in role.config.items() %}{{ k }} = {{ v }}
 {% endfor %}</pre>
-  <p class="muted">The administrator password is never persisted on the manage server. It was delivered to the agent on its first check-in and immediately scrubbed from the task record.</p>
+  <p class="muted">The administrator password is never persisted on the reevectl server. It was delivered to the agent on its first check-in and immediately scrubbed from the task record.</p>
 </section>
 
 {% if role.role_type == "auth_server" and role.status == "installed" %}
@@ -32,6 +32,39 @@
     <li>Verify: <code class="mono">samba-tool domain info 127.0.0.1</code></li>
     <li>Domain-join clients to this server's IP for DNS.</li>
   </ul>
+</section>
+{% elif role.role_type == "security_server" and role.status == "installed" %}
+<section class="card">
+  <h2>Service URLs</h2>
+  {% set ip = role.agent.ip_address or role.agent.hostname %}
+  <ul>
+    <li>DHCP + DNS — listening on <code class="mono">{{ ip }}</code> (interface <code class="mono">{{ role.config.get('interface') }}</code>)</li>
+    {% if role.config.get('enable_blocklist', True) %}<li>DNS blocklist — refreshed daily from sources in <code class="mono">/etc/reevectl-blocklist/sources.list</code></li>{% endif %}
+    {% if role.config.get('enable_squid', True) %}<li>Web proxy — <code class="mono">http://{{ ip }}:{{ role.config.get('squid_port', 3128) }}</code></li>{% endif %}
+    {% if role.config.get('enable_apt_mirror', True) %}<li>apt mirror — <code class="mono">http://{{ ip }}/ubuntu/</code> <span class="muted">(initial sync logs: <code>/var/log/apt-mirror-initial.log</code> on the security server)</span></li>{% endif %}
+    {% if role.config.get('enable_clamav_mirror', True) %}<li>ClamAV signatures — <code class="mono">http://{{ ip }}/clamav/</code></li>{% endif %}
+    {% if role.config.get('enable_log_server', True) %}<li>Log server — <code class="mono">{{ ip }}:514/udp,tcp</code> → <code class="mono">/var/log/reevectl-fleet/&lt;hostname&gt;/</code> (kept {{ role.config.get('log_retention_days', 30) }} day(s))</li>{% endif %}
+  </ul>
+</section>
+
+<section class="card">
+  <h2>Configure clients to use this server</h2>
+  <p class="muted">Queues 3-5 client-config tasks per device (whichever services are enabled here): apt, ClamAV, DNS, syslog forwarding, and the web proxy. The Security Server itself is automatically excluded from "All devices".</p>
+  <form method="post" action="/roles/{{ role.id }}/configure-clients" class="task-form">
+    <label>Target
+      <select name="target_kind" id="cc-target-kind" onchange="
+        document.getElementById('cc-group').hidden = this.value !== 'group';
+        document.getElementById('cc-agent').hidden = this.value !== 'agent';
+      ">
+        <option value="all">All enrolled devices</option>
+        <option value="group">A group</option>
+        <option value="agent">A single device</option>
+      </select>
+    </label>
+    <div id="cc-group" hidden><label>Group ID<input name="target_id" placeholder="(group id)"></label></div>
+    <div id="cc-agent" hidden><label>Agent ID<input name="target_id" placeholder="(agent_id)"></label></div>
+    <button type="submit">Queue client-config tasks</button>
+  </form>
 </section>
 {% elif role.role_type == "file_server" and role.status == "installed" %}
 <section class="card">
@@ -51,7 +84,7 @@
 {% endif %}
 
 <section class="card">
-  <form method="post" action="/roles/{{ role.id }}/delete" onsubmit="return confirm('Remove the role record from Manage? Services on the host will keep running — this just forgets the bookkeeping.')">
+  <form method="post" action="/roles/{{ role.id }}/delete" onsubmit="return confirm('Remove the role record from reevectl? Services on the host will keep running — this just forgets the bookkeeping.')">
     <button class="danger" type="submit">Remove role record</button>
   </form>
 </section>

@@ -5,33 +5,33 @@ from pathlib import Path
 
 class Settings:
     def __init__(self) -> None:
-        self.data_dir = Path(os.environ.get("MANAGE_DATA_DIR", "/data"))
+        self.data_dir = Path(os.environ.get("REEVECTL_DATA_DIR", "/data"))
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.database_url = os.environ.get(
-            "MANAGE_DATABASE_URL", f"sqlite:///{self.data_dir / 'manage.db'}"
+            "REEVECTL_DATABASE_URL", f"sqlite:///{self.data_dir / 'reevectl.db'}"
         )
 
-        self.secret_key = os.environ.get("MANAGE_SECRET_KEY") or self._load_or_create_secret()
+        self.secret_key = os.environ.get("REEVECTL_SECRET_KEY") or self._load_or_create_secret()
 
-        self.bootstrap_admin_user = os.environ.get("MANAGE_ADMIN_USER", "admin")
-        self.bootstrap_admin_password = os.environ.get("MANAGE_ADMIN_PASSWORD")
+        self.bootstrap_admin_user = os.environ.get("REEVECTL_ADMIN_USER", "admin")
+        self.bootstrap_admin_password = os.environ.get("REEVECTL_ADMIN_PASSWORD")
 
-        self.public_url = os.environ.get("MANAGE_PUBLIC_URL", "").rstrip("/")
-        self.checkin_interval_seconds = int(os.environ.get("MANAGE_CHECKIN_INTERVAL", "30"))
-        self.offline_after_seconds = int(os.environ.get("MANAGE_OFFLINE_AFTER", "120"))
+        self.public_url = os.environ.get("REEVECTL_PUBLIC_URL", "").rstrip("/")
+        self.checkin_interval_seconds = int(os.environ.get("REEVECTL_CHECKIN_INTERVAL", "30"))
+        self.offline_after_seconds = int(os.environ.get("REEVECTL_OFFLINE_AFTER", "120"))
         self.max_task_output_chars = 64 * 1024
 
-        # LDAP / AD (all optional — empty MANAGE_LDAP_URL disables LDAP).
-        self.ldap_url = os.environ.get("MANAGE_LDAP_URL", "").strip()
-        self.ldap_bind_dn = os.environ.get("MANAGE_LDAP_BIND_DN", "").strip()
-        self.ldap_bind_password = os.environ.get("MANAGE_LDAP_BIND_PASSWORD", "")
-        self.ldap_user_search_base = os.environ.get("MANAGE_LDAP_USER_SEARCH_BASE", "").strip()
+        # LDAP / AD (all optional — empty REEVECTL_LDAP_URL disables LDAP).
+        self.ldap_url = os.environ.get("REEVECTL_LDAP_URL", "").strip()
+        self.ldap_bind_dn = os.environ.get("REEVECTL_LDAP_BIND_DN", "").strip()
+        self.ldap_bind_password = os.environ.get("REEVECTL_LDAP_BIND_PASSWORD", "")
+        self.ldap_user_search_base = os.environ.get("REEVECTL_LDAP_USER_SEARCH_BASE", "").strip()
         self.ldap_user_filter = os.environ.get(
-            "MANAGE_LDAP_USER_FILTER", "(sAMAccountName={username})"
+            "REEVECTL_LDAP_USER_FILTER", "(sAMAccountName={username})"
         )
-        self.ldap_admin_group_dn = os.environ.get("MANAGE_LDAP_ADMIN_GROUP_DN", "").strip()
-        self.ldap_use_ssl = os.environ.get("MANAGE_LDAP_USE_SSL", "").lower() in ("1", "true", "yes")
+        self.ldap_admin_group_dn = os.environ.get("REEVECTL_LDAP_ADMIN_GROUP_DN", "").strip()
+        self.ldap_use_ssl = os.environ.get("REEVECTL_LDAP_USE_SSL", "").lower() in ("1", "true", "yes")
 
     def _load_or_create_secret(self) -> str:
         secret_path = self.data_dir / "secret_key"

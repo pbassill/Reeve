@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
-# Native installer for the Manage server on Ubuntu 22.04 / 24.04.
+# Native installer for the reevectl server on Ubuntu 22.04 / 24.04.
 #
 # Idempotent — safe to re-run to upgrade an existing install.
 #
 # Usage:
-#   sudo MANAGE_DOMAIN=manage.example.com ./server/install.sh
+#   sudo REEVECTL_DOMAIN=reevectl.example.com ./server/install.sh
 #
 # Optional env vars:
-#   MANAGE_TLS=caddy   (default — install Caddy and auto-issue Let's Encrypt cert)
-#   MANAGE_TLS=none    (skip web server; uvicorn will still bind to 127.0.0.1)
-#   MANAGE_TLS=manual  (skip web server; you'll handle TLS yourself, see notes)
+#   REEVECTL_TLS=caddy   (default — install Caddy and auto-issue Let's Encrypt cert)
+#   REEVECTL_TLS=none    (skip web server; uvicorn will still bind to 127.0.0.1)
+#   REEVECTL_TLS=manual  (skip web server; you'll handle TLS yourself, see notes)
 #
-#   MANAGE_ADMIN_USER=admin
-#   MANAGE_ADMIN_PASSWORD=  (blank = generate random and write to disk)
-#   MANAGE_PORT=8000
+#   REEVECTL_ADMIN_USER=admin
+#   REEVECTL_ADMIN_PASSWORD=  (blank = generate random and write to disk)
+#   REEVECTL_PORT=8000
 #
 # Layout after install:
-#   /opt/manage/server/        (code)
-#   /opt/manage/agent/         (agent files served to clients)
-#   /opt/manage/.venv/         (python virtualenv)
-#   /etc/manage/manage.env     (config — readable only by root + the manage user)
-#   /var/lib/manage/           (sqlite db, secret key, initial admin password)
-#   /etc/systemd/system/manage.service
+#   /opt/reevectl/server/        (code)
+#   /opt/reevectl/agent/         (agent files served to clients)
+#   /opt/reevectl/.venv/         (python virtualenv)
+#   /etc/reevectl/reevectl.env   (config — readable only by root + the reevectl user)
+#   /var/lib/reevectl/           (sqlite db, secret key, initial admin password)
+#   /etc/systemd/system/reevectl.service
 
 set -euo pipefail
 
-INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/manage}"
-DATA_DIR="${MANAGE_DATA_DIR:-/var/lib/manage}"
-ETC_DIR="${MANAGE_ETC_DIR:-/etc/manage}"
-SERVICE_USER="manage"
-TLS_MODE="${MANAGE_TLS:-caddy}"
-PORT="${MANAGE_PORT:-8000}"
+INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/reevectl}"
+DATA_DIR="${REEVECTL_DATA_DIR:-/var/lib/reevectl}"
+ETC_DIR="${REEVECTL_ETC_DIR:-/etc/reevectl}"
+SERVICE_USER="reevectl"
+TLS_MODE="${REEVECTL_TLS:-caddy}"
+PORT="${REEVECTL_PORT:-8000}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "ERROR: install.sh must run as root (sudo)." >&2
   exit 2
 fi
 
-if [[ -z "${MANAGE_DOMAIN:-}" && "$TLS_MODE" != "none" && "$TLS_MODE" != "manual" ]]; then
-  echo "ERROR: MANAGE_DOMAIN must be set (or use MANAGE_TLS=none/manual to skip Caddy)." >&2
+if [[ -z "${REEVECTL_DOMAIN:-}" && "$TLS_MODE" != "none" && "$TLS_MODE" != "manual" ]]; then
+  echo "ERROR: REEVECTL_DOMAIN must be set (or use REEVECTL_TLS=none/manual to skip Caddy)." >&2
   exit 2
 fi
 
@@ -47,15 +47,15 @@ fi
 SRC_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ ! -d "$SRC_ROOT/server/app" || ! -d "$SRC_ROOT/agent" ]]; then
   echo "ERROR: expected to find $SRC_ROOT/server/app and $SRC_ROOT/agent." >&2
-  echo "Run this script from a checkout of the manage repository." >&2
+  echo "Run this script from a checkout of the reevectl repository." >&2
   exit 2
 fi
 
-echo "[manage] Installing from $SRC_ROOT"
-echo "[manage] Prefix: $INSTALL_PREFIX  Data: $DATA_DIR  TLS: $TLS_MODE"
+echo "[reevectl] Installing from $SRC_ROOT"
+echo "[reevectl] Prefix: $INSTALL_PREFIX  Data: $DATA_DIR  TLS: $TLS_MODE"
 
 # --- 1. System packages ------------------------------------------------------
-echo "[manage] Installing system packages..."
+echo "[reevectl] Installing system packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
@@ -64,7 +64,7 @@ apt-get install -y --no-install-recommends \
 
 # --- 2. Service user ---------------------------------------------------------
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
-  echo "[manage] Creating system user $SERVICE_USER..."
+  echo "[reevectl] Creating system user $SERVICE_USER..."
   useradd --system --home-dir "$INSTALL_PREFIX" --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 
@@ -74,7 +74,7 @@ install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DATA_DIR"
 install -d -m 0755                                       "$ETC_DIR"
 
 # --- 4. Sync code (use rsync so re-runs upgrade in place) --------------------
-echo "[manage] Syncing code to $INSTALL_PREFIX..."
+echo "[reevectl] Syncing code to $INSTALL_PREFIX..."
 rsync -a --delete \
   --exclude='__pycache__' --exclude='*.pyc' \
   "$SRC_ROOT/server/" "$INSTALL_PREFIX/server/"
@@ -85,46 +85,46 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PREFIX/server" "$INSTALL_PREFIX
 
 # --- 5. Virtualenv -----------------------------------------------------------
 if [[ ! -x "$INSTALL_PREFIX/.venv/bin/python" ]]; then
-  echo "[manage] Creating Python virtualenv..."
+  echo "[reevectl] Creating Python virtualenv..."
   python3 -m venv "$INSTALL_PREFIX/.venv"
 fi
-echo "[manage] Installing/upgrading Python dependencies..."
+echo "[reevectl] Installing/upgrading Python dependencies..."
 "$INSTALL_PREFIX/.venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_PREFIX/.venv/bin/pip" install --quiet --upgrade -r "$INSTALL_PREFIX/server/requirements.txt"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PREFIX/.venv"
 
 # --- 6. Environment file -----------------------------------------------------
-ENV_FILE="$ETC_DIR/manage.env"
+ENV_FILE="$ETC_DIR/reevectl.env"
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "[manage] Writing $ENV_FILE..."
-  PUBLIC_URL_DEFAULT="${MANAGE_PUBLIC_URL:-https://${MANAGE_DOMAIN:-localhost}}"
+  echo "[reevectl] Writing $ENV_FILE..."
+  PUBLIC_URL_DEFAULT="${REEVECTL_PUBLIC_URL:-https://${REEVECTL_DOMAIN:-localhost}}"
   cat > "$ENV_FILE" <<EOF
-MANAGE_PUBLIC_URL=${PUBLIC_URL_DEFAULT}
-MANAGE_DATA_DIR=${DATA_DIR}
-MANAGE_AGENT_DIR=${INSTALL_PREFIX}/agent
-MANAGE_PORT=${PORT}
-MANAGE_ADMIN_USER=${MANAGE_ADMIN_USER:-admin}
-MANAGE_ADMIN_PASSWORD=${MANAGE_ADMIN_PASSWORD:-}
-MANAGE_CHECKIN_INTERVAL=${MANAGE_CHECKIN_INTERVAL:-30}
+REEVECTL_PUBLIC_URL=${PUBLIC_URL_DEFAULT}
+REEVECTL_DATA_DIR=${DATA_DIR}
+REEVECTL_AGENT_DIR=${INSTALL_PREFIX}/agent
+REEVECTL_PORT=${PORT}
+REEVECTL_ADMIN_USER=${REEVECTL_ADMIN_USER:-admin}
+REEVECTL_ADMIN_PASSWORD=${REEVECTL_ADMIN_PASSWORD:-}
+REEVECTL_CHECKIN_INTERVAL=${REEVECTL_CHECKIN_INTERVAL:-30}
 EOF
   chown root:"$SERVICE_USER" "$ENV_FILE"
   chmod 0640 "$ENV_FILE"
 else
-  echo "[manage] $ENV_FILE already exists — leaving it alone."
+  echo "[reevectl] $ENV_FILE already exists — leaving it alone."
 fi
 
 # --- 7. Systemd unit ---------------------------------------------------------
-echo "[manage] Installing systemd unit..."
-install -m 0644 "$INSTALL_PREFIX/server/manage.service" /etc/systemd/system/manage.service
+echo "[reevectl] Installing systemd unit..."
+install -m 0644 "$INSTALL_PREFIX/server/reevectl.service" /etc/systemd/system/reevectl.service
 systemctl daemon-reload
-systemctl enable manage.service >/dev/null
-systemctl restart manage.service
+systemctl enable reevectl.service >/dev/null
+systemctl restart reevectl.service
 
 # --- 8. Reverse proxy --------------------------------------------------------
 case "$TLS_MODE" in
   caddy)
     if ! command -v caddy >/dev/null; then
-      echo "[manage] Installing Caddy..."
+      echo "[reevectl] Installing Caddy..."
       apt-get install -y --no-install-recommends debian-keyring debian-archive-keyring apt-transport-https gnupg
       curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
         | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -142,20 +142,20 @@ case "$TLS_MODE" in
       SHOULD_OVERWRITE=false
     fi
     if $SHOULD_OVERWRITE; then
-      echo "[manage] Writing $CADDY_FILE..."
+      echo "[reevectl] Writing $CADDY_FILE..."
       cat > "$CADDY_FILE" <<EOF
-${MANAGE_DOMAIN} {
+${REEVECTL_DOMAIN} {
     encode zstd gzip
     reverse_proxy 127.0.0.1:${PORT}
 }
 EOF
     else
-      SNIPPET="/etc/caddy/manage.Caddyfile"
-      echo "[manage] Existing custom $CADDY_FILE detected — wrote snippet to $SNIPPET instead."
-      echo "[manage] Add this line to your $CADDY_FILE:"
-      echo "[manage]     import $SNIPPET"
+      SNIPPET="/etc/caddy/reevectl.Caddyfile"
+      echo "[reevectl] Existing custom $CADDY_FILE detected — wrote snippet to $SNIPPET instead."
+      echo "[reevectl] Add this line to your $CADDY_FILE:"
+      echo "[reevectl]     import $SNIPPET"
       cat > "$SNIPPET" <<EOF
-${MANAGE_DOMAIN} {
+${REEVECTL_DOMAIN} {
     encode zstd gzip
     reverse_proxy 127.0.0.1:${PORT}
 }
@@ -165,17 +165,17 @@ EOF
     systemctl restart caddy
     ;;
   none|manual)
-    echo "[manage] Skipping reverse-proxy setup (MANAGE_TLS=$TLS_MODE)."
+    echo "[reevectl] Skipping reverse-proxy setup (REEVECTL_TLS=$TLS_MODE)."
     if [[ "$TLS_MODE" == "manual" ]]; then
       cat <<EOF
-[manage] You chose manual TLS. The manage server is listening on 127.0.0.1:${PORT}.
-[manage] Point your existing reverse proxy (nginx, Apache, HAProxy, Cloudflare Tunnel, …) at it.
-[manage] Make sure to forward the Host header and pass-through WebSocket upgrades.
+[reevectl] You chose manual TLS. The reevectl server is listening on 127.0.0.1:${PORT}.
+[reevectl] Point your existing reverse proxy (nginx, Apache, HAProxy, Cloudflare Tunnel, …) at it.
+[reevectl] Make sure to forward the Host header and pass-through WebSocket upgrades.
 EOF
     fi
     ;;
   *)
-    echo "ERROR: unknown MANAGE_TLS=$TLS_MODE (expected caddy|none|manual)" >&2
+    echo "ERROR: unknown REEVECTL_TLS=$TLS_MODE (expected caddy|none|manual)" >&2
     exit 2
     ;;
 esac
@@ -193,8 +193,8 @@ if [[ -f "$INITIAL_PWD_FILE" ]]; then
 fi
 
 echo
-echo "[manage] Done. Service status:"
-systemctl --no-pager --lines=0 status manage.service || true
+echo "[reevectl] Done. Service status:"
+systemctl --no-pager --lines=0 status reevectl.service || true
 echo
-echo "[manage] Logs:    journalctl -u manage -f"
-echo "[manage] Open:    ${MANAGE_PUBLIC_URL:-https://${MANAGE_DOMAIN:-<your-domain>}}"
+echo "[reevectl] Logs:    journalctl -u reevectl -f"
+echo "[reevectl] Open:    ${REEVECTL_PUBLIC_URL:-https://${REEVECTL_DOMAIN:-<your-domain>}}"

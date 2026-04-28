@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage agent — runs as a systemd service on each Ubuntu host.
+"""reevectl agent — runs as a systemd service on each Ubuntu host.
 
 Polls the configured server, executes queued tasks, reports results.
 """
@@ -19,11 +19,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.4.0"
-CONFIG_PATH = Path(os.environ.get("MANAGE_CONFIG", "/etc/manage-agent/config.json"))
+AGENT_VERSION = "0.6.0"
+CONFIG_PATH = Path(os.environ.get("REEVECTL_CONFIG", "/etc/reevectl-agent/config.json"))
 DEFAULT_INTERVAL = 30
 
-log = logging.getLogger("manage-agent")
+log = logging.getLogger("reevectl-agent")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -37,7 +37,7 @@ def _http(method: str, url: str, headers: dict[str, str] | None = None, body: di
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", f"manage-agent/{AGENT_VERSION}")
+    req.add_header("User-Agent", f"reevectl-agent/{AGENT_VERSION}")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
@@ -325,10 +325,10 @@ def execute_task(task: dict[str, Any], agent_state: dict[str, Any]) -> tuple[int
         except OSError as e:
             return 1, "", f"push_file error: {e}"
     if t == "reboot":
-        subprocess.Popen(["shutdown", "-r", "+1", "Reboot scheduled by Manage"])
+        subprocess.Popen(["shutdown", "-r", "+1", "Reboot scheduled by reevectl"])
         return 0, "reboot scheduled in 60s", ""
     if t == "shutdown":
-        subprocess.Popen(["shutdown", "-h", "+1", "Shutdown scheduled by Manage"])
+        subprocess.Popen(["shutdown", "-h", "+1", "Shutdown scheduled by reevectl"])
         return 0, "shutdown scheduled in 60s", ""
     if t == "set_wallpaper":
         return _set_wallpaper_system(p.get("url", ""))
@@ -357,6 +357,18 @@ def execute_task(task: dict[str, Any], agent_state: dict[str, Any]) -> tuple[int
         return _install_print_server(p)
     if t == "install_dhcp_dns":
         return _install_dhcp_dns(p)
+    if t == "install_security_server":
+        return _install_security_server(p)
+    if t == "set_apt_mirror":
+        return _set_apt_mirror(p)
+    if t == "set_clamav_mirror":
+        return _set_clamav_mirror(p)
+    if t == "set_dns_servers":
+        return _set_dns_servers(p)
+    if t == "set_log_forwarding":
+        return _set_log_forwarding(p)
+    if t == "set_proxy":
+        return _set_proxy(p)
     if t == "check_compliance":
         return _check_compliance(p)
     if t == "inventory_refresh":
@@ -512,7 +524,7 @@ EOF
    workgroup = ${DOMAIN}
    realm = ${REALM}
    security = ADS
-   server string = Manage File Server
+   server string = reevectl File Server
    log file = /var/log/samba/log.%m
    max log size = 1000
 
@@ -567,7 +579,7 @@ else
   cat > /etc/samba/smb.conf <<EOF
 [global]
    workgroup = WORKGROUP
-   server string = Manage File Server
+   server string = reevectl File Server
    server role = standalone server
    security = user
    passdb backend = tdbsam
@@ -693,8 +705,8 @@ nameserver ${UPSTREAM_DNS}
 search ${DOMAIN}
 EOF
 
-cat > /etc/dnsmasq.d/manage.conf <<EOF
-# Managed by Manage. Do not edit by hand.
+cat > /etc/dnsmasq.d/reevectl.conf <<EOF
+# Managed by reevectl. Do not edit by hand.
 interface=${INTERFACE}
 bind-interfaces
 domain-needed
@@ -730,6 +742,452 @@ def _install_dhcp_dns(p: dict[str, Any]) -> tuple[int, str, str]:
         "DOMAIN": p.get("domain") or "lan",
     }
     return _run(_DHCP_DNS_SCRIPT, shell=True, env=env, timeout=1800)
+
+
+# Security Server: DHCP+DNS + DNS blocklists (Pi-hole-style) + Squid forward
+# proxy + apt mirror + ClamAV signature mirror + central rsyslog. The full bash
+# is large because it composes six independently-installable services; each is
+# behind an ENABLE_* env toggle so admins can opt out per service.
+_SECURITY_SERVER_SCRIPT = r"""
+set -euo pipefail
+: "${INTERFACE:?INTERFACE required}"
+: "${SUBNET:?SUBNET required}"
+: "${RANGE_START:?RANGE_START required}"
+: "${RANGE_END:?RANGE_END required}"
+: "${GATEWAY:?GATEWAY required}"
+: "${NETMASK:=255.255.255.0}"
+: "${UPSTREAM_DNS:=1.1.1.1}"
+: "${DOMAIN:=lan}"
+: "${ENABLE_BLOCKLIST:=1}"
+: "${ENABLE_SQUID:=1}"
+: "${ENABLE_APT_MIRROR:=1}"
+: "${ENABLE_CLAMAV_MIRROR:=1}"
+: "${ENABLE_LOG_SERVER:=1}"
+: "${BLOCKLIST_URLS:=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts}"
+: "${SQUID_BLOCK_DOMAINS:=}"
+: "${SQUID_PORT:=3128}"
+: "${UBUNTU_CODENAME:=}"
+: "${MIRROR_COMPONENTS:=main restricted universe multiverse}"
+: "${LOG_RETENTION_DAYS:=30}"
+
+if [ -z "${UBUNTU_CODENAME}" ]; then
+  UBUNTU_CODENAME="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-noble}}")"
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+
+# Common: dnsmasq + nginx (always; nginx serves apt + clamav + UI catch-all).
+apt-get install -y --no-install-recommends dnsmasq nginx curl gawk
+
+# Disable systemd-resolved so dnsmasq can bind :53.
+if systemctl is-enabled systemd-resolved >/dev/null 2>&1; then
+  systemctl disable --now systemd-resolved
+fi
+[ -L /etc/resolv.conf ] && rm /etc/resolv.conf
+cat > /etc/resolv.conf <<EOF
+nameserver 127.0.0.1
+nameserver ${UPSTREAM_DNS}
+search ${DOMAIN}
+EOF
+
+# --- dnsmasq: DHCP + DNS ---
+cat > /etc/dnsmasq.d/reevectl-security.conf <<EOF
+# Managed by reevectl. Do not edit by hand.
+interface=${INTERFACE}
+bind-interfaces
+domain-needed
+bogus-priv
+no-resolv
+server=${UPSTREAM_DNS}
+domain=${DOMAIN}
+local=/${DOMAIN}/
+expand-hosts
+
+dhcp-range=${RANGE_START},${RANGE_END},${NETMASK},12h
+dhcp-option=3,${GATEWAY}
+# Tell DHCP clients we are their DNS server (resolves at our IP via interface).
+dhcp-option=6,0.0.0.0
+EOF
+
+# --- DNS blocklist (Pi-hole-style) ---
+if [ "${ENABLE_BLOCKLIST}" = "1" ]; then
+  install -d -m 0755 /etc/reevectl-blocklist
+  cat > /usr/local/sbin/reevectl-update-blocklist <<'BLEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+SOURCES_FILE=/etc/reevectl-blocklist/sources.list
+TMP=$(mktemp); OUT=/etc/dnsmasq.d/reevectl-blocklist.conf
+trap 'rm -f "$TMP"' EXIT
+while IFS= read -r url; do
+  [ -z "$url" ] && continue
+  curl -fsSL --connect-timeout 15 --max-time 300 "$url" >> "$TMP" 2>/dev/null || \
+    echo "[reevectl-blocklist] WARN: failed to fetch $url" >&2
+done < "$SOURCES_FILE"
+# Convert "0.0.0.0 baddomain.com" or "127.0.0.1 baddomain.com" lines to dnsmasq
+# address records; dedupe; skip 'localhost' and bare 0.0.0.0 lines.
+gawk '
+  /^[[:space:]]*#/  { next }
+  /^[[:space:]]*$/  { next }
+  $1 == "0.0.0.0" || $1 == "127.0.0.1" {
+    if ($2 == "" || $2 == "localhost" || $2 == "0.0.0.0") next
+    gsub(/[\r\t ]+$/, "", $2)
+    print "address=/" $2 "/0.0.0.0"
+  }
+' "$TMP" | sort -u > "$OUT.tmp"
+mv "$OUT.tmp" "$OUT"
+COUNT=$(wc -l < "$OUT")
+echo "[reevectl-blocklist] $COUNT entries written to $OUT"
+systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq
+BLEOF
+  chmod 0755 /usr/local/sbin/reevectl-update-blocklist
+  printf '%s\n' ${BLOCKLIST_URLS} > /etc/reevectl-blocklist/sources.list
+  cat > /etc/cron.daily/reevectl-blocklist <<'CREOF'
+#!/usr/bin/env bash
+/usr/local/sbin/reevectl-update-blocklist >> /var/log/reevectl-blocklist.log 2>&1
+CREOF
+  chmod 0755 /etc/cron.daily/reevectl-blocklist
+  /usr/local/sbin/reevectl-update-blocklist >> /var/log/reevectl-blocklist.log 2>&1 || true
+fi
+
+# --- Squid forward proxy ---
+if [ "${ENABLE_SQUID}" = "1" ]; then
+  apt-get install -y --no-install-recommends squid
+  : > /etc/squid/reevectl-blocked.acl
+  for d in ${SQUID_BLOCK_DOMAINS}; do
+    echo ".${d}" >> /etc/squid/reevectl-blocked.acl
+  done
+  install -d -m 0755 /etc/squid/conf.d
+  cat > /etc/squid/conf.d/reevectl-security.conf <<EOF
+http_port ${SQUID_PORT}
+acl reevectl_blocked dstdomain "/etc/squid/reevectl-blocked.acl"
+http_access deny reevectl_blocked
+acl localnet src 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7 fe80::/10
+http_access allow localnet
+http_access allow localhost
+http_access deny all
+access_log /var/log/squid/access.log
+cache_log  /var/log/squid/cache.log
+EOF
+  systemctl enable --now squid
+  systemctl reload squid 2>/dev/null || systemctl restart squid
+fi
+
+# --- APT mirror (initial sync runs in the background) ---
+APT_MIRROR_PID=
+if [ "${ENABLE_APT_MIRROR}" = "1" ]; then
+  apt-get install -y --no-install-recommends apt-mirror
+  install -d -o apt-mirror -g apt-mirror /var/spool/apt-mirror /var/spool/apt-mirror/var
+  install -d /var/www
+  cat > /etc/apt/mirror.list <<EOF
+set base_path    /var/spool/apt-mirror
+set mirror_path  \$base_path/mirror
+set skel_path    \$base_path/skel
+set var_path     \$base_path/var
+set defaultarch  amd64
+set nthreads     20
+set _tilde 0
+
+deb http://archive.ubuntu.com/ubuntu ${UBUNTU_CODENAME}            ${MIRROR_COMPONENTS}
+deb http://archive.ubuntu.com/ubuntu ${UBUNTU_CODENAME}-updates    ${MIRROR_COMPONENTS}
+deb http://archive.ubuntu.com/ubuntu ${UBUNTU_CODENAME}-backports  ${MIRROR_COMPONENTS}
+deb http://security.ubuntu.com/ubuntu ${UBUNTU_CODENAME}-security  ${MIRROR_COMPONENTS}
+
+clean http://archive.ubuntu.com/ubuntu
+clean http://security.ubuntu.com/ubuntu
+EOF
+  ln -sfn /var/spool/apt-mirror/mirror/archive.ubuntu.com/ubuntu /var/www/ubuntu
+  cat > /etc/cron.d/reevectl-apt-mirror <<'CREOF'
+# Daily Ubuntu mirror refresh, 02:30 system time.
+30 2 * * * apt-mirror /usr/bin/apt-mirror >> /var/log/apt-mirror.log 2>&1
+CREOF
+  # Initial sync — fork it; can take hours and tens of gigabytes.
+  nohup apt-mirror >> /var/log/apt-mirror-initial.log 2>&1 &
+  APT_MIRROR_PID=$!
+  echo "[role:security_server] apt-mirror initial sync started in background (pid ${APT_MIRROR_PID}); progress in /var/log/apt-mirror-initial.log"
+fi
+
+# --- ClamAV signature mirror via Cisco's cvdupdate ---
+if [ "${ENABLE_CLAMAV_MIRROR}" = "1" ]; then
+  apt-get install -y --no-install-recommends python3-pip python3-venv
+  if ! command -v cvd >/dev/null 2>&1; then
+    python3 -m venv /opt/cvdupdate
+    /opt/cvdupdate/bin/pip install --quiet --upgrade pip
+    /opt/cvdupdate/bin/pip install --quiet cvdupdate
+    ln -sfn /opt/cvdupdate/bin/cvd /usr/local/bin/cvd
+  fi
+  install -d /var/www/clamav
+  cvd config set --dbdir /var/www/clamav --logdir /var/log >/dev/null || true
+  cvd update >> /var/log/cvdupdate.log 2>&1 || true
+  cat > /etc/cron.d/reevectl-cvdupdate <<'CREOF'
+# Hourly ClamAV signature mirror refresh.
+17 * * * * root /usr/local/bin/cvd update >> /var/log/cvdupdate.log 2>&1
+CREOF
+fi
+
+# --- Central log server (rsyslog on UDP+TCP 514) ---
+if [ "${ENABLE_LOG_SERVER}" = "1" ]; then
+  apt-get install -y --no-install-recommends rsyslog
+  install -d -m 0755 /var/log/reevectl-fleet
+  cat > /etc/rsyslog.d/00-reevectl-fleet.conf <<EOF
+# Managed by reevectl. Receives logs from fleet agents.
+module(load="imudp")
+input(type="imudp" port="514")
+module(load="imtcp")
+input(type="imtcp" port="514")
+
+# Per-source-host directories. Drop after writing (don't pollute /var/log/syslog).
+template(name="ReevectlPerHost" type="string"
+         string="/var/log/reevectl-fleet/%HOSTNAME%/%PROGRAMNAME:::secpath-replace%.log")
+ruleset(name="reevectl_remote") {
+    action(type="omfile" dynaFile="ReevectlPerHost" fileCreateMode="0640" dirCreateMode="0755")
+    stop
+}
+input(type="imudp" port="514" ruleset="reevectl_remote")
+input(type="imtcp" port="514" ruleset="reevectl_remote")
+EOF
+  cat > /etc/logrotate.d/reevectl-fleet <<EOF
+/var/log/reevectl-fleet/*/*.log {
+  daily
+  rotate ${LOG_RETENTION_DAYS}
+  compress
+  delaycompress
+  missingok
+  notifempty
+  create 0640 syslog adm
+  sharedscripts
+  postrotate
+    /usr/lib/rsyslog/rsyslog-rotate >/dev/null 2>&1 || true
+  endscript
+}
+EOF
+  systemctl restart rsyslog
+fi
+
+# --- nginx serves apt mirror + clamav signatures ---
+cat > /etc/nginx/sites-available/reevectl-security <<'NGEOF'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    root /var/www;
+    autoindex on;
+    autoindex_exact_size off;
+    location = / {
+        return 200 "reevectl Security Server\n  /ubuntu/   apt mirror\n  /clamav/   ClamAV signatures\n";
+        default_type text/plain;
+    }
+    location /ubuntu/ {
+        alias /var/www/ubuntu/;
+        autoindex on;
+    }
+    location /clamav/ {
+        alias /var/www/clamav/;
+        autoindex on;
+    }
+}
+NGEOF
+ln -sfn /etc/nginx/sites-available/reevectl-security /etc/nginx/sites-enabled/reevectl-security
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
+
+# --- Bring dnsmasq up last (after blocklist file is in place) ---
+dnsmasq --test
+systemctl enable --now dnsmasq
+systemctl restart dnsmasq
+
+IP=$(hostname -I | awk '{print $1}')
+echo "[role:security_server] DONE — services on $IP"
+systemctl is-active --quiet dnsmasq && echo "  dnsmasq      : DHCP+DNS active on ${INTERFACE} (${RANGE_START}-${RANGE_END})"
+[ "${ENABLE_BLOCKLIST}" = "1" ]      && echo "  blocklist    : $(wc -l < /etc/dnsmasq.d/reevectl-blocklist.conf 2>/dev/null || echo 0) domains, refreshed daily"
+[ "${ENABLE_SQUID}" = "1" ]          && systemctl is-active --quiet squid    && echo "  squid        : forward proxy on :${SQUID_PORT}"
+[ "${ENABLE_APT_MIRROR}" = "1" ]     && echo "  apt mirror   : http://${IP}/ubuntu/  (initial sync running in background, see /var/log/apt-mirror-initial.log)"
+[ "${ENABLE_CLAMAV_MIRROR}" = "1" ]  && echo "  clamav       : http://${IP}/clamav/"
+[ "${ENABLE_LOG_SERVER}" = "1" ]     && systemctl is-active --quiet rsyslog && echo "  rsyslog      : 514/udp+tcp -> /var/log/reevectl-fleet/<hostname>/"
+"""
+
+
+def _install_security_server(p: dict[str, Any]) -> tuple[int, str, str]:
+    blocklist = p.get("blocklist_urls") or []
+    if isinstance(blocklist, list):
+        blocklist_str = " ".join(blocklist)
+    else:
+        blocklist_str = str(blocklist)
+    squid_block = p.get("squid_block_domains") or []
+    if isinstance(squid_block, list):
+        squid_block_str = " ".join(squid_block)
+    else:
+        squid_block_str = str(squid_block)
+    env = {
+        **os.environ,
+        "INTERFACE": p.get("interface", ""),
+        "SUBNET": p.get("subnet", ""),
+        "RANGE_START": p.get("range_start", ""),
+        "RANGE_END": p.get("range_end", ""),
+        "GATEWAY": p.get("gateway", ""),
+        "NETMASK": p.get("netmask") or "255.255.255.0",
+        "UPSTREAM_DNS": p.get("upstream_dns") or "1.1.1.1",
+        "DOMAIN": p.get("domain") or "lan",
+        "ENABLE_BLOCKLIST": "1" if p.get("enable_blocklist", True) else "0",
+        "ENABLE_SQUID": "1" if p.get("enable_squid", True) else "0",
+        "ENABLE_APT_MIRROR": "1" if p.get("enable_apt_mirror", True) else "0",
+        "ENABLE_CLAMAV_MIRROR": "1" if p.get("enable_clamav_mirror", True) else "0",
+        "ENABLE_LOG_SERVER": "1" if p.get("enable_log_server", True) else "0",
+        "BLOCKLIST_URLS": blocklist_str,
+        "SQUID_BLOCK_DOMAINS": squid_block_str,
+        "SQUID_PORT": str(p.get("squid_port") or 3128),
+        "UBUNTU_CODENAME": p.get("ubuntu_codename") or "",
+        "MIRROR_COMPONENTS": p.get("mirror_components") or "main restricted universe multiverse",
+        "LOG_RETENTION_DAYS": str(p.get("log_retention_days") or 30),
+    }
+    return _run(_SECURITY_SERVER_SCRIPT, shell=True, env=env, timeout=2400)
+
+
+# --- Client-side configuration tasks (point a host at the security server) --
+
+
+def _set_apt_mirror(p: dict[str, Any]) -> tuple[int, str, str]:
+    url = p["url"].rstrip("/")
+    codename = p.get("codename") or ""
+    if not codename:
+        try:
+            codename = subprocess.run(
+                ["lsb_release", "-sc"], capture_output=True, text=True, timeout=5
+            ).stdout.strip() or "noble"
+        except (FileNotFoundError, subprocess.SubprocessError):
+            codename = "noble"
+    components = p.get("components") or "main restricted universe multiverse"
+    sources_dir = Path("/etc/apt/sources.list.d")
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    target = sources_dir / "reevectl-mirror.sources"
+    body = (
+        "# Managed by reevectl. Points apt at the Security Server's mirror.\n"
+        f"Types: deb\n"
+        f"URIs: {url}\n"
+        f"Suites: {codename} {codename}-updates {codename}-backports {codename}-security\n"
+        f"Components: {components}\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+    )
+    target.write_text(body)
+    # Disable Ubuntu's default sources so we don't double-fetch.
+    main_list = Path("/etc/apt/sources.list")
+    if main_list.exists() and "reevectl-mirror" not in main_list.read_text():
+        backup = main_list.with_suffix(".list.pre-reevectl")
+        if not backup.exists():
+            backup.write_text(main_list.read_text())
+        main_list.write_text("# Sources moved aside by reevectl. See reevectl-mirror.sources.\n")
+    rc, out, err = _run(["apt-get", "update"], timeout=300)
+    return rc, f"apt now points at {url}\n{out}", err
+
+
+def _set_clamav_mirror(p: dict[str, Any]) -> tuple[int, str, str]:
+    url = p["url"].rstrip("/")
+    # ClamAV may not be installed; install if missing so the change has effect.
+    if subprocess.run(["which", "freshclam"], capture_output=True).returncode != 0:
+        env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        rc, out, err = _run(
+            ["apt-get", "install", "-y", "--no-install-recommends", "clamav-freshclam"],
+            env=env, timeout=600,
+        )
+        if rc != 0:
+            return rc, out, err
+    conf = Path("/etc/clamav/freshclam.conf")
+    if not conf.exists():
+        return 1, "", "ClamAV not installed and apt-get install failed"
+    text = conf.read_text()
+    new_lines: list[str] = []
+    saw_marker = False
+    for line in text.splitlines():
+        if line.startswith("DatabaseMirror") or "reevectl:" in line:
+            continue
+        if "# reevectl-mirror" in line:
+            saw_marker = True
+            continue
+        new_lines.append(line)
+    new_lines.append("# reevectl-mirror BEGIN")
+    new_lines.append(f"DatabaseMirror {url.replace('http://', '').replace('https://', '')}")
+    new_lines.append("# reevectl-mirror END")
+    conf.write_text("\n".join(new_lines).rstrip() + "\n")
+    rc, out, err = _run(["freshclam"], timeout=300)
+    return rc, f"clamav now mirrors {url}\n{out}", err
+
+
+def _set_dns_servers(p: dict[str, Any]) -> tuple[int, str, str]:
+    servers = p["servers"]
+    search = p.get("search_domain") or ""
+    body = "\n".join(f"nameserver {s}" for s in servers)
+    if search:
+        body += f"\nsearch {search}"
+    body += "\n"
+    target = Path("/etc/resolv.conf")
+    # On systems with systemd-resolved, /etc/resolv.conf is a symlink. Replace it.
+    if target.is_symlink():
+        target.unlink()
+    target.write_text(body)
+    # Make the change sticky against NetworkManager / systemd-resolved.
+    try:
+        subprocess.run(["chattr", "+i", str(target)], capture_output=True, timeout=5)
+    except FileNotFoundError:
+        pass
+    return 0, f"nameservers set to {' '.join(servers)}", ""
+
+
+def _set_log_forwarding(p: dict[str, Any]) -> tuple[int, str, str]:
+    server = p["server"]
+    port = p.get("port", 514)
+    proto = p.get("protocol", "udp")
+    if proto not in ("udp", "tcp"):
+        return 1, "", f"bad protocol {proto}"
+    # rsyslog forwarding format: @host:port for UDP, @@host:port for TCP.
+    target = "@" + ("@" if proto == "tcp" else "") + f"{server}:{port}"
+    conf = Path("/etc/rsyslog.d/99-reevectl-forward.conf")
+    conf.write_text(f"# Managed by reevectl. Forwards every facility/level to the central log server.\n*.* {target}\n")
+    rc, out, err = _run(["systemctl", "restart", "rsyslog"], timeout=30)
+    if rc != 0:
+        # rsyslog might not be installed; install it.
+        env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        rc2, out2, err2 = _run(
+            ["apt-get", "install", "-y", "--no-install-recommends", "rsyslog"],
+            env=env, timeout=300,
+        )
+        if rc2 != 0:
+            return rc2, out + out2, err + err2
+        rc, out, err = _run(["systemctl", "restart", "rsyslog"], timeout=30)
+    return rc, f"forwarding rsyslog to {target}\n{out}", err
+
+
+def _set_proxy(p: dict[str, Any]) -> tuple[int, str, str]:
+    url = p["proxy_url"]
+    no_proxy = p.get("no_proxy") or "localhost,127.0.0.1,::1"
+    # System-wide env (login shells + systemd services that source /etc/environment).
+    env_path = Path("/etc/environment")
+    keep: list[str] = []
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith(("HTTP_PROXY=", "HTTPS_PROXY=", "http_proxy=",
+                                "https_proxy=", "NO_PROXY=", "no_proxy=", "# reevectl-proxy")):
+                continue
+            keep.append(line)
+    keep += [
+        "# reevectl-proxy BEGIN",
+        f"HTTP_PROXY=\"{url}\"",
+        f"HTTPS_PROXY=\"{url}\"",
+        f"http_proxy=\"{url}\"",
+        f"https_proxy=\"{url}\"",
+        f"NO_PROXY=\"{no_proxy}\"",
+        f"no_proxy=\"{no_proxy}\"",
+        "# reevectl-proxy END",
+    ]
+    env_path.write_text("\n".join(keep).rstrip() + "\n")
+    # APT proxy (apt does NOT respect HTTP_PROXY).
+    apt_path = Path("/etc/apt/apt.conf.d/95-reevectl-proxy")
+    apt_path.write_text(
+        f'Acquire::http::Proxy  "{url}";\n'
+        f'Acquire::https::Proxy "{url}";\n'
+    )
+    return 0, f"proxy set to {url}", ""
 
 
 # --- Compliance check (rule evaluator) -------------------------------------
@@ -833,7 +1291,7 @@ def _inventory_refresh(state: dict[str, Any]) -> tuple[int, str, str]:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": f"manage-agent/{AGENT_VERSION}",
+            "User-Agent": f"reevectl-agent/{AGENT_VERSION}",
         },
     )
     try:
@@ -963,7 +1421,7 @@ def _terminal_bridge(server: str, token: str, session_id: str) -> tuple[int, str
 
     headers = {
         "Authorization": f"Bearer {token}",
-        "User-Agent": f"manage-agent/{AGENT_VERSION}",
+        "User-Agent": f"reevectl-agent/{AGENT_VERSION}",
     }
     stop = threading.Event()
 
@@ -1123,7 +1581,7 @@ def _set_wallpaper_system(url: str) -> tuple[int, str, str]:
         return 1, "", "no url"
     bg_dir = Path("/usr/share/backgrounds")
     bg_dir.mkdir(parents=True, exist_ok=True)
-    target = bg_dir / "manage-wallpaper.jpg"
+    target = bg_dir / "reevectl-wallpaper.jpg"
     try:
         with urllib.request.urlopen(url, timeout=60) as r:
             target.write_bytes(r.read())
@@ -1133,10 +1591,10 @@ def _set_wallpaper_system(url: str) -> tuple[int, str, str]:
     profile_dir = Path("/etc/dconf/profile")
     profile_dir.mkdir(parents=True, exist_ok=True)
     user_profile = profile_dir / "user"
-    if "system-db:manage" not in (user_profile.read_text() if user_profile.exists() else ""):
-        user_profile.write_text("user-db:user\nsystem-db:manage\n")
+    if "system-db:reevectl" not in (user_profile.read_text() if user_profile.exists() else ""):
+        user_profile.write_text("user-db:user\nsystem-db:reevectl\n")
 
-    db_dir = Path("/etc/dconf/db/manage.d")
+    db_dir = Path("/etc/dconf/db/reevectl.d")
     db_dir.mkdir(parents=True, exist_ok=True)
     (db_dir / "00-wallpaper").write_text(
         "[org/gnome/desktop/background]\n"
@@ -1155,7 +1613,7 @@ def _set_wallpaper_user(url: str) -> tuple[int, str, str]:
     target_dir = Path(f"/home/{user}/.local/share/backgrounds")
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / "manage-wallpaper.jpg"
+        target = target_dir / "reevectl-wallpaper.jpg"
         with urllib.request.urlopen(url, timeout=60) as r:
             target.write_bytes(r.read())
         import pwd
@@ -1184,7 +1642,7 @@ def _self_update(server: str, expected_version: str, expected_sha256: str) -> bo
     self_path = Path(__file__).resolve()
     log.info("Self-update: downloading %s -> %s", expected_version, self_path)
     try:
-        with urllib.request.urlopen(f"{server}/agent/manage-agent.py", timeout=60) as r:
+        with urllib.request.urlopen(f"{server}/agent/reevectl-agent.py", timeout=60) as r:
             content = r.read()
     except Exception as e:
         log.error("Self-update download failed: %s", e)
@@ -1195,7 +1653,7 @@ def _self_update(server: str, expected_version: str, expected_sha256: str) -> bo
         return False
     try:
         tmp = tempfile.NamedTemporaryFile(
-            "wb", dir=str(self_path.parent), delete=False, prefix=".manage-agent.", suffix=".new"
+            "wb", dir=str(self_path.parent), delete=False, prefix=".reevectl-agent.", suffix=".new"
         )
         tmp.write(content)
         tmp.flush()
@@ -1262,10 +1720,10 @@ def checkin_loop(cfg: dict[str, Any]) -> None:
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "enroll":
-        server = os.environ.get("MANAGE_SERVER")
-        token = os.environ.get("MANAGE_TOKEN")
+        server = os.environ.get("REEVECTL_SERVER")
+        token = os.environ.get("REEVECTL_TOKEN")
         if not server or not token:
-            log.error("MANAGE_SERVER and MANAGE_TOKEN env vars required for enrollment")
+            log.error("REEVECTL_SERVER and REEVECTL_TOKEN env vars required for enrollment")
             sys.exit(2)
         enroll(server, token)
         return

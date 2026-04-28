@@ -1,4 +1,4 @@
-# Manage
+# reevectl
 
 A self-hosted, open-source alternative to **Zorin Grid** for centrally managing
 fleets of Ubuntu workstations and servers. One web console, one lightweight
@@ -29,7 +29,12 @@ run Linux.
   - **File Server** — Samba shares with departmental ACLs and per-user homes.
     Standalone or domain-joined.
   - **Print Server** — CUPS with optional remote admin.
-  - **DHCP + DNS** — dnsmasq for branch-office / lab networks.
+  - **Security Server** — DHCP + DNS (dnsmasq) with Pi-hole-style domain
+    blocklists, Squid forward proxy with site filtering, a local Ubuntu apt
+    mirror so the fleet doesn't all hit the internet, a ClamAV signature
+    mirror, and a central rsyslog endpoint. The branch-office "everything
+    box". A one-click button on the role page configures every other host to
+    use the new mirror / DNS / proxy / log forwarder.
 - **Scheduled tasks** — cron expressions or simple intervals; optional daily
   maintenance windows; per-agent maintenance windows for "never reboot during
   business hours".
@@ -56,12 +61,12 @@ run Linux.
 ### Docker (simplest)
 
 ```bash
-git clone <this-repo> manage
-cd manage
+git clone <this-repo> reevectl
+cd reevectl
 cp .env.example .env
-# Edit .env — set MANAGE_DOMAIN and MANAGE_PUBLIC_URL.
+# Edit .env — set REEVECTL_DOMAIN and REEVECTL_PUBLIC_URL.
 docker compose up -d --build
-docker compose exec manage cat /data/INITIAL_ADMIN_PASSWORD
+docker compose exec reevectl cat /data/INITIAL_ADMIN_PASSWORD
 ```
 
 Open `https://<your-domain>/` and sign in.
@@ -69,13 +74,13 @@ Open `https://<your-domain>/` and sign in.
 ### Native (Ubuntu 22.04 / 24.04)
 
 ```bash
-git clone <this-repo> manage
-cd manage
-sudo MANAGE_DOMAIN=manage.example.com ./server/install.sh
+git clone <this-repo> reevectl
+cd reevectl
+sudo REEVECTL_DOMAIN=reevectl.example.com ./server/install.sh
 ```
 
-The script installs Python deps, creates a `manage` system user, lays the
-project at `/opt/manage`, writes `/etc/manage/manage.env`, drops a systemd
+The script installs Python deps, creates a `reevectl` system user, lays the
+project at `/opt/reevectl`, writes `/etc/reevectl/reevectl.env`, drops a systemd
 unit, installs Caddy from upstream, and prints the bootstrap admin password.
 
 Re-running the script upgrades in place. To uninstall: `sudo
@@ -87,11 +92,11 @@ In the dashboard, **Enrollment → Generate token** prints a one-line install
 command. Run it on each Ubuntu machine:
 
 ```bash
-curl -fsSL https://manage.example.com/install.sh \
-  | sudo MANAGE_SERVER=https://manage.example.com MANAGE_TOKEN=<token> bash
+curl -fsSL https://reevectl.example.com/install.sh \
+  | sudo REEVECTL_SERVER=https://reevectl.example.com REEVECTL_TOKEN=<token> bash
 ```
 
-The agent installs to `/opt/manage-agent`, registers a systemd unit, enrolls,
+The agent installs to `/opt/reevectl-agent`, registers a systemd unit, enrolls,
 and starts checking in (default 30s).
 
 ---
@@ -100,7 +105,7 @@ and starts checking in (default 30s).
 
 ```
             ┌──────────────────────┐
- admin ──▶  │  manage server       │
+ admin ──▶  │  reevectl server       │
  browser    │  ─ FastAPI + SQLite  │  ─── WebSocket  ───▶  admin browser (live status, terminal)
             │  ─ scheduler loop    │
             │  ─ alert sweep loop  │
@@ -108,7 +113,7 @@ and starts checking in (default 30s).
                    │ HTTPS (Caddy or native systemd, no inbound on agents)
                    ▼
             ┌──────────────────────┐
-            │  manage-agent.py     │  pure stdlib, runs as root
+            │  reevectl-agent.py     │  pure stdlib, runs as root
             │  ─ systemd service   │  Ubuntu host
             │  ─ polls every 30s   │
             └──────────────────────┘
@@ -118,7 +123,7 @@ and starts checking in (default 30s).
   Works for road-warrior laptops behind NAT.
 - **Single-process server** — FastAPI + SQLite + a couple of asyncio
   background loops. Scales to thousands of hosts on a small VM.
-- **Single binary on each host** — `manage-agent.py` is pure stdlib (no pip
+- **Single binary on each host** — `reevectl-agent.py` is pure stdlib (no pip
   install). Self-updates from the server.
 - **Audit-logged** — every task has stdout/stderr/exit code stored on the
   server, with the admin who issued it.
@@ -129,7 +134,7 @@ and starts checking in (default 30s).
 
 | Thing | What it is |
 | --- | --- |
-| **Agent** | An Ubuntu machine running `manage-agent.py`. |
+| **Agent** | An Ubuntu machine running `reevectl-agent.py`. |
 | **Group** | A label you apply to agents to target them in bulk. |
 | **Task** | A unit of work (shell command, apt install, reboot, …) sent to one or more agents. |
 | **Role** | A bundle of installation steps that turns an agent into a configured Auth/File/Print/DHCP server. |
@@ -149,7 +154,8 @@ and starts checking in (default 30s).
 | `reboot` / `shutdown` | Scheduled 60s out so the result can flow back. |
 | `set_wallpaper` | System-wide via dconf override. |
 | `user_shell` / `user_gsettings` / `set_wallpaper_user` / `set_dock_favorites` | Run as the active desktop user via `runuser` + dbus. |
-| `install_auth_server` / `install_file_server` / `install_print_server` / `install_dhcp_dns` | Role provisioners. |
+| `install_auth_server` / `install_file_server` / `install_print_server` / `install_security_server` | Role provisioners. |
+| `set_apt_mirror` / `set_clamav_mirror` / `set_dns_servers` / `set_log_forwarding` / `set_proxy` | Point a client at a Security Server's services. Usually queued in bulk via the role detail page's "Configure clients" button. |
 | `check_compliance` | Evaluates policy rules; returns drift JSON. |
 | `inventory_refresh` | Uploads installed packages (apt + snap + flatpak). |
 | `open_terminal` | Opens a pty bridged to the admin browser. |
@@ -165,12 +171,12 @@ Provisions a real LDAP + Kerberos + DNS domain controller. Form fields:
 
 - **Realm** (FQDN, uppercase, e.g. `EXAMPLE.LOCAL`)
 - **NetBIOS domain** (1-15 chars, e.g. `EXAMPLE`)
-- **Administrator password** (min 8 chars; never persisted on the manage
+- **Administrator password** (min 8 chars; never persisted on the reevectl
   server — wiped from the task payload as soon as the agent picks it up)
 - **DNS forwarder**
 
 Idempotent: re-running detects an existing provision and just makes sure the
-service is up. `chattr +i`s `/etc/resolv.conf` so NetworkManager doesn't
+service is up. `chattr +i`s `/etc/resolv.conf` so Networkreevectlr doesn't
 clobber the loopback resolver.
 
 After install, add a user with a shell task on the DC:
@@ -194,12 +200,48 @@ so files inherit the group. Per-user `[homes]` share is included.
 Installs CUPS + every printer driver Ubuntu ships. Optionally exposes the
 admin UI to the LAN and adds a chosen user to the `lpadmin` group.
 
-### DHCP + DNS (dnsmasq)
+### Security Server
 
-The lightweight branch-office server: dnsmasq handles both DHCP and forwarding
-DNS. Disables `systemd-resolved`, replaces `/etc/resolv.conf`, writes
-`/etc/dnsmasq.d/manage.conf` with the configured scope. Useful as the LAN
-infra companion to the AD DC.
+The branch-office / lab "everything box". Bundles six services on one host;
+each is independently togglable in the install form:
+
+- **DHCP + DNS** via `dnsmasq`. Replaces `systemd-resolved`, writes the DHCP
+  scope, makes itself the DNS server for clients.
+- **DNS blocklists (Pi-hole-style)**. A daily cron downloads upstream hosts
+  files (Steven Black's list by default — configurable to any number of
+  URLs), converts them into `address=/domain/0.0.0.0` records, and reloads
+  dnsmasq. Lookups for blocked domains return 0.0.0.0 — same mechanism Pi-hole
+  uses (their FTL is a dnsmasq fork).
+- **Squid forward proxy with site filtering**. Listens on configurable port
+  (3128 by default), filters by destination domain — works for both HTTP and
+  HTTPS (HTTPS via the CONNECT method, no SSL bump / no client CA needed).
+  Block list is admin-editable on the box at `/etc/squid/reevectl-blocked.acl`.
+- **Local Ubuntu apt mirror** via `apt-mirror`, served by nginx at
+  `http://<server>/ubuntu/`. Initial sync runs **in the background** (50–200
+  GB, several hours); the install task returns once everything else is up.
+  Daily refresh via `/etc/cron.d/reevectl-apt-mirror`.
+- **ClamAV signature mirror** via Cisco's official `cvdupdate` tool. Hourly
+  refresh; clients fetch from `http://<server>/clamav/`.
+- **Central rsyslog**. Listens on UDP+TCP 514, writes per-host log trees at
+  `/var/log/reevectl-fleet/<hostname>/<programname>.log`, retention via
+  logrotate (configurable in days).
+
+After install, the role detail page has a **"Configure clients to use this
+server"** button. Pick a target group / single device / all enrolled devices,
+and reevectl queues the appropriate `set_apt_mirror`, `set_clamav_mirror`,
+`set_dns_servers`, `set_log_forwarding`, and `set_proxy` tasks across the
+target. The Security Server itself is auto-excluded from "All devices".
+
+The five client-config tasks can also be queued individually from the API or a
+schedule:
+
+```json
+{"type": "set_apt_mirror",      "payload": {"url": "http://10.0.0.5/ubuntu/", "codename": "noble"}}
+{"type": "set_clamav_mirror",   "payload": {"url": "http://10.0.0.5/clamav/"}}
+{"type": "set_dns_servers",     "payload": {"servers": ["10.0.0.5"], "search_domain": "lan"}}
+{"type": "set_log_forwarding",  "payload": {"server": "10.0.0.5", "protocol": "udp", "port": 514}}
+{"type": "set_proxy",           "payload": {"proxy_url": "http://10.0.0.5:3128", "no_proxy": "localhost,127.0.0.1"}}
+```
 
 ---
 
@@ -254,7 +296,7 @@ Built-in rule kinds:
 - `task_failed` — fires once per failed task.
 
 Each rule has a webhook URL — a Slack incoming-webhook URL works as-is. The
-payload is `{"text": "[manage] <summary>", "kind": "...", "rule": "...",
+payload is `{"text": "[reevectl] <summary>", "kind": "...", "rule": "...",
 "details": {...}}`.
 
 Sweep runs once a minute.
@@ -263,17 +305,17 @@ Sweep runs once a minute.
 
 ## LDAP / Active Directory login
 
-Set in `.env` (Docker) or `/etc/manage/manage.env` (native):
+Set in `.env` (Docker) or `/etc/reevectl/reevectl.env` (native):
 
 ```bash
-MANAGE_LDAP_URL=ldaps://ad.example.com
-MANAGE_LDAP_USE_SSL=true
-MANAGE_LDAP_BIND_DN=CN=ManageBind,OU=Service,DC=example,DC=com
-MANAGE_LDAP_BIND_PASSWORD=changeme
-MANAGE_LDAP_USER_SEARCH_BASE=OU=Users,DC=example,DC=com
-MANAGE_LDAP_USER_FILTER=(sAMAccountName={username})
+REEVECTL_LDAP_URL=ldaps://ad.example.com
+REEVECTL_LDAP_USE_SSL=true
+REEVECTL_LDAP_BIND_DN=CN=reevectlBind,OU=Service,DC=example,DC=com
+REEVECTL_LDAP_BIND_PASSWORD=changeme
+REEVECTL_LDAP_USER_SEARCH_BASE=OU=Users,DC=example,DC=com
+REEVECTL_LDAP_USER_FILTER=(sAMAccountName={username})
 # optional — restrict admin login to a group:
-MANAGE_LDAP_ADMIN_GROUP_DN=CN=Manage Admins,OU=Groups,DC=example,DC=com
+REEVECTL_LDAP_ADMIN_GROUP_DN=CN=reevectl Admins,OU=Groups,DC=example,DC=com
 ```
 
 Login flow tries local password first, then LDAP. On first successful LDAP
@@ -297,7 +339,7 @@ In **Settings**:
 ## Self-update
 
 The server reads `AGENT_VERSION` and computes a SHA-256 of
-`agent/manage-agent.py` at startup. Every check-in response includes
+`agent/reevectl-agent.py` at startup. Every check-in response includes
 `agent_update: {version, sha256, url}` when the agent is behind. The agent
 downloads, hash-verifies, atomically replaces itself, and exits — systemd
 restarts it. Admins can force an update by queuing the `self_update` task.
@@ -322,15 +364,15 @@ the per-agent token issued at enrollment.
 ## Project layout
 
 ```
-manage/
+reevectl/
 ├── docker-compose.yml          # Docker deploy
 ├── deploy/Caddyfile
 ├── server/
 │   ├── Dockerfile
 │   ├── install.sh              # Native Ubuntu installer
 │   ├── uninstall.sh
-│   ├── manage.service          # systemd unit (native deploy)
-│   ├── manage.env.example
+│   ├── reevectl.service          # systemd unit (native deploy)
+│   ├── reevectl.env.example
 │   ├── requirements.txt
 │   └── app/
 │       ├── main.py             # FastAPI app + lifespan (scheduler + alerts)
@@ -356,8 +398,8 @@ manage/
 │       ├── static/style.css
 │       └── templates/
 └── agent/
-    ├── manage-agent.py         # Pure-stdlib agent
-    ├── manage-agent.service    # systemd unit installed on managed hosts
+    ├── reevectl-agent.py         # Pure-stdlib agent
+    ├── reevectl-agent.service    # systemd unit installed on managed hosts
     └── install.sh              # Served at <server>/install.sh
 ```
 
@@ -372,13 +414,13 @@ needs Python 3.12+ and the deps in `server/requirements.txt`. For local dev:
 cd server
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-MANAGE_DATA_DIR=./data \
-MANAGE_PUBLIC_URL=http://localhost:8000 \
-MANAGE_ADMIN_PASSWORD=devpass \
+REEVECTL_DATA_DIR=./data \
+REEVECTL_PUBLIC_URL=http://localhost:8000 \
+REEVECTL_ADMIN_PASSWORD=devpass \
 uvicorn app.main:app --reload --port 8000
 ```
 
-Then enroll a test VM with `MANAGE_SERVER=http://your-laptop-ip:8000`.
+Then enroll a test VM with `REEVECTL_SERVER=http://your-laptop-ip:8000`.
 
 ---
 
@@ -393,7 +435,7 @@ Then enroll a test VM with `MANAGE_SERVER=http://your-laptop-ip:8000`.
 - The web terminal opens a **root** shell on the agent. Treat dashboard
   access accordingly: deploy behind TLS (Caddy by default), use strong admin
   passwords, restrict to LDAP-group members in production.
-- Native deploy runs the server as a non-root `manage` user with
+- Native deploy runs the server as a non-root `reevectl` user with
   `ProtectSystem=strict`. The agent must run as root to do its job (apt,
   systemctl, push files anywhere).
 

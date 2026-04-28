@@ -1,5 +1,5 @@
 services:
-  manage:
+  reevectl:
     build:
       context: .
       dockerfile: server/Dockerfile
@@ -7,19 +7,19 @@ services:
     expose:
       - "8000"
     environment:
-      MANAGE_PUBLIC_URL: "${MANAGE_PUBLIC_URL:?set MANAGE_PUBLIC_URL=https://your-domain.example.com in .env}"
-      MANAGE_ADMIN_USER: "${MANAGE_ADMIN_USER:-admin}"
-      MANAGE_ADMIN_PASSWORD: "${MANAGE_ADMIN_PASSWORD:-}"
-      MANAGE_CHECKIN_INTERVAL: "${MANAGE_CHECKIN_INTERVAL:-30}"
-      MANAGE_LDAP_URL: "${MANAGE_LDAP_URL:-}"
-      MANAGE_LDAP_USE_SSL: "${MANAGE_LDAP_USE_SSL:-}"
-      MANAGE_LDAP_BIND_DN: "${MANAGE_LDAP_BIND_DN:-}"
-      MANAGE_LDAP_BIND_PASSWORD: "${MANAGE_LDAP_BIND_PASSWORD:-}"
-      MANAGE_LDAP_USER_SEARCH_BASE: "${MANAGE_LDAP_USER_SEARCH_BASE:-}"
-      MANAGE_LDAP_USER_FILTER: "${MANAGE_LDAP_USER_FILTER:-(sAMAccountName={username})}"
-      MANAGE_LDAP_ADMIN_GROUP_DN: "${MANAGE_LDAP_ADMIN_GROUP_DN:-}"
+      REEVECTL_PUBLIC_URL: "${REEVECTL_PUBLIC_URL:?set REEVECTL_PUBLIC_URL=https://your-domain.example.com in .env}"
+      REEVECTL_ADMIN_USER: "${REEVECTL_ADMIN_USER:-admin}"
+      REEVECTL_ADMIN_PASSWORD: "${REEVECTL_ADMIN_PASSWORD:-}"
+      REEVECTL_CHECKIN_INTERVAL: "${REEVECTL_CHECKIN_INTERVAL:-30}"
+      REEVECTL_LDAP_URL: "${REEVECTL_LDAP_URL:-}"
+      REEVECTL_LDAP_USE_SSL: "${REEVECTL_LDAP_USE_SSL:-}"
+      REEVECTL_LDAP_BIND_DN: "${REEVECTL_LDAP_BIND_DN:-}"
+      REEVECTL_LDAP_BIND_PASSWORD: "${REEVECTL_LDAP_BIND_PASSWORD:-}"
+      REEVECTL_LDAP_USER_SEARCH_BASE: "${REEVECTL_LDAP_USER_SEARCH_BASE:-}"
+      REEVECTL_LDAP_USER_FILTER: "${REEVECTL_LDAP_USER_FILTER:-(sAMAccountName={username})}"
+      REEVECTL_LDAP_ADMIN_GROUP_DN: "${REEVECTL_LDAP_ADMIN_GROUP_DN:-}"
     volumes:
-      - manage_data:/data
+      - reevectl_data:/data
 
   caddy:
     image: caddy:2
@@ -28,15 +28,15 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      MANAGE_DOMAIN: "${MANAGE_DOMAIN:?set MANAGE_DOMAIN=your-domain.example.com in .env}"
+      REEVECTL_DOMAIN: "${REEVECTL_DOMAIN:?set REEVECTL_DOMAIN=your-domain.example.com in .env}"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - manage
+      - reevectl
 
 volumes:
-  manage_data:
+  reevectl_data:
   caddy_data:
   caddy_config:

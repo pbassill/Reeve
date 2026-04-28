@@ -59,12 +59,12 @@ async def lifespan(app: FastAPI):
                 t.cancel()
 
 
-app = FastAPI(title="Manage", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="reevectl", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.secret_key,
-    session_cookie="manage_session",
+    session_cookie="reevectl_session",
     same_site="lax",
     https_only=False,
     max_age=60 * 60 * 24 * 7,
@@ -99,10 +99,10 @@ def _ensure_bootstrap_admin() -> None:
             (settings.data_dir / "INITIAL_ADMIN_PASSWORD").write_text(
                 f"{username}\n{password}\n"
             )
-            print(f"[manage] Bootstrap admin '{username}' created. Password written to "
+            print(f"[reevectl] Bootstrap admin '{username}' created. Password written to "
                   f"{settings.data_dir / 'INITIAL_ADMIN_PASSWORD'}")
         else:
-            print(f"[manage] Bootstrap admin '{username}' created from MANAGE_ADMIN_PASSWORD.")
+            print(f"[reevectl] Bootstrap admin '{username}' created from REEVECTL_ADMIN_PASSWORD.")
 
 
 @app.get("/health", response_class=PlainTextResponse)
@@ -119,17 +119,17 @@ def install_script(request: Request) -> Response:
     return PlainTextResponse(body, headers={"Content-Type": "text/x-shellscript"})
 
 
-@app.get("/agent/manage-agent.py", response_class=PlainTextResponse)
+@app.get("/agent/reevectl-agent.py", response_class=PlainTextResponse)
 def agent_source() -> Response:
     return PlainTextResponse(
-        (agent_release.AGENT_DIR / "manage-agent.py").read_text(),
+        (agent_release.AGENT_DIR / "reevectl-agent.py").read_text(),
         headers={"Content-Type": "text/x-python"},
     )
 
 
-@app.get("/agent/manage-agent.service", response_class=PlainTextResponse)
+@app.get("/agent/reevectl-agent.service", response_class=PlainTextResponse)
 def agent_unit() -> Response:
     return PlainTextResponse(
-        (agent_release.AGENT_DIR / "manage-agent.service").read_text(),
+        (agent_release.AGENT_DIR / "reevectl-agent.service").read_text(),
         headers={"Content-Type": "text/plain"},
     )

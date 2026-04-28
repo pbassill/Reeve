@@ -6,7 +6,11 @@
       "Bash(pip install *)",
       "Bash(python -m py_compile server/app/__init__.py server/app/config.py server/app/db.py server/app/models.py server/app/auth.py server/app/ldap_auth.py server/app/schemas.py server/app/utils.py server/app/migrations.py server/app/agent_release.py server/app/api_agents.py server/app/api_admin.py server/app/views.py server/app/admins_views.py server/app/admin_settings_views.py server/app/ws.py server/app/main.py agent/manage-agent.py)",
       "Bash(python -m py_compile server/app/__init__.py server/app/config.py server/app/db.py server/app/models.py server/app/auth.py server/app/ldap_auth.py server/app/schemas.py server/app/utils.py server/app/migrations.py server/app/agent_release.py server/app/scheduler.py server/app/alerts.py server/app/api_agents.py server/app/api_admin.py server/app/views.py server/app/admins_views.py server/app/admin_settings_views.py server/app/roles_views.py server/app/schedule_views.py server/app/policy_views.py server/app/inventory_views.py server/app/alerts_views.py server/app/terminal_views.py server/app/ws.py server/app/main.py agent/manage-agent.py)",
-      "Bash(python -c \"import sys; sys.path.insert\\(0, 'server'\\); import os; os.environ['MANAGE_DATA_DIR']='./_check2'; from app import ws; from app import terminal_views; print\\('ws and terminal_views import OK'\\)\")"
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'server'\\); import os; os.environ['MANAGE_DATA_DIR']='./_check2'; from app import ws; from app import terminal_views; print\\('ws and terminal_views import OK'\\)\")",
+      "Bash(python -m py_compile server/app/api_admin.py server/app/roles_views.py agent/manage-agent.py)",
+      "Bash(python -m py_compile server/app/__init__.py server/app/config.py server/app/db.py server/app/models.py server/app/auth.py server/app/ldap_auth.py server/app/schemas.py server/app/utils.py server/app/migrations.py server/app/agent_release.py server/app/scheduler.py server/app/alerts.py server/app/api_agents.py server/app/api_admin.py server/app/views.py server/app/admins_views.py server/app/admin_settings_views.py server/app/roles_views.py server/app/schedule_views.py server/app/policy_views.py server/app/inventory_views.py server/app/alerts_views.py server/app/terminal_views.py server/app/ws.py server/app/main.py agent/reevectl-agent.py)",
+      "Bash(bash -n server/install.sh)",
+      "Bash(bash -n server/uninstall.sh)"
     ]
   }
 }

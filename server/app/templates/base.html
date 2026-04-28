@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{% block title %}Manage{% endblock %}</title>
+<title>{% block title %}reevectl{% endblock %}</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 {% if request.session.get('user') %}
 <nav>
-  <a href="/" class="logo">Manage</a>
+  <a href="/" class="logo">reevectl</a>
   <a href="/devices" class="{% if active == 'devices' %}active{% endif %}">Devices</a>
   <a href="/groups" class="{% if active == 'groups' %}active{% endif %}">Groups</a>
   <a href="/roles" class="{% if active == 'roles' %}active{% endif %}">Roles</a>

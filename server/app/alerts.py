@@ -181,7 +181,7 @@ def deliver(db: Session) -> int:
             delivered_count += 1
             continue
         body = {
-            "text": f"[manage] {ev.summary}",
+            "text": f"[reevectl] {ev.summary}",
             "kind": ev.rule.kind,
             "rule": ev.rule.name,
             "fired_at": ev.fired_at.isoformat(),
@@ -193,7 +193,7 @@ def deliver(db: Session) -> int:
                 url,
                 data=json.dumps(body).encode(),
                 method="POST",
-                headers={"Content-Type": "application/json", "User-Agent": "manage/alerts"},
+                headers={"Content-Type": "application/json", "User-Agent": "reevectl/alerts"},
             )
             urllib.request.urlopen(req, timeout=10).read()
             ev.delivered = True

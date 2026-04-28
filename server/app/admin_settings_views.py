@@ -63,7 +63,7 @@ def backup_download(admin: Admin = Depends(require_admin)) -> FileResponse:
     if not sqlite_p or not sqlite_p.exists():
         raise HTTPException(status_code=400, detail="Backup only supported for SQLite")
     with _BACKUP_LOCK:
-        out = Path(tempfile.gettempdir()) / f"manage-backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
+        out = Path(tempfile.gettempdir()) / f"reevectl-backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
         # Use SQLite's online backup API for a consistent snapshot.
         src = sqlite3.connect(str(sqlite_p))
         try:
@@ -74,7 +74,7 @@ def backup_download(admin: Admin = Depends(require_admin)) -> FileResponse:
                 dst.close()
         finally:
             src.close()
-    filename = f"manage-backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
+    filename = f"reevectl-backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
     return FileResponse(
         path=str(out),
         media_type="application/x-sqlite3",

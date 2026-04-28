@@ -13,11 +13,11 @@ def _resolve_agent_dir() -> Path:
     """Locate the directory containing the bundled agent files.
 
     Search order:
-      1. $MANAGE_AGENT_DIR (explicit override; used by the systemd unit).
+      1. $REEVECTL_AGENT_DIR (explicit override; used by the systemd unit).
       2. /agent  (Docker image layout — see server/Dockerfile).
       3. ../agent relative to this file (local dev / git checkout).
     """
-    env = os.environ.get("MANAGE_AGENT_DIR")
+    env = os.environ.get("REEVECTL_AGENT_DIR")
     if env:
         return Path(env)
     docker_path = Path("/agent")
@@ -27,7 +27,7 @@ def _resolve_agent_dir() -> Path:
 
 
 AGENT_DIR = _resolve_agent_dir()
-_AGENT_PATH = AGENT_DIR / "manage-agent.py"
+_AGENT_PATH = AGENT_DIR / "reevectl-agent.py"
 
 
 _state: dict[str, str] = {"version": "", "sha256": ""}

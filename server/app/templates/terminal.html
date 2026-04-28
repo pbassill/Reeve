@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Terminal: {{ agent.hostname }} — Manage{% endblock %}
+{% block title %}Terminal: {{ agent.hostname }} — reevectl{% endblock %}
 {% block content %}
 <header class="page-head">
   <div>
@@ -33,15 +33,15 @@
   fit.fit();
   window.addEventListener('resize', () => fit.fit());
 
-  term.write('[manage] connecting to agent…\r\n');
+  term.write('[reevectl] connecting to agent…\r\n');
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${proto}//${location.host}/ws/terminal/{{ session_id }}`;
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => term.write('[manage] connected — waiting for shell\r\n');
+  ws.onopen = () => term.write('[reevectl] connected — waiting for shell\r\n');
   ws.onmessage = (e) => term.write(e.data);
-  ws.onclose = () => term.write('\r\n[manage] disconnected\r\n');
+  ws.onclose = () => term.write('\r\n[reevectl] disconnected\r\n');
 
   term.onData(d => {
     if (ws.readyState === WebSocket.OPEN) {

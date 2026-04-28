@@ -1,4 +1,4 @@
-{$MANAGE_DOMAIN} {
+{$REEVECTL_DOMAIN} {
     encode zstd gzip
-    reverse_proxy manage:8000
+    reverse_proxy reevectl:8000
 }

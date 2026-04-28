@@ -1,11 +1,11 @@
 [Unit]
-Description=Manage agent (centralized Ubuntu management)
+Description=reevectl agent (centralized Ubuntu management)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/manage-agent/manage-agent.py
+ExecStart=/usr/bin/python3 /opt/reevectl-agent/reevectl-agent.py
 Restart=always
 RestartSec=10
 User=root

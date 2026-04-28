@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Manage agent installer.
+# reevectl agent installer.
 #
 # Usage on each Ubuntu host (run as root):
-#   curl -fsSL https://your-server/install.sh | sudo MANAGE_SERVER=https://your-server MANAGE_TOKEN=<enrollment-token> bash
+#   curl -fsSL https://your-server/install.sh | sudo REEVECTL_SERVER=https://your-server REEVECTL_TOKEN=<enrollment-token> bash
 #
-# When this script is served by the Manage server itself, MANAGE_SERVER will
+# When this script is served by the reevectl server itself, REEVECTL_SERVER will
 # be auto-injected as @@SERVER_URL@@ at request time.
 set -euo pipefail
 
-SERVER="${MANAGE_SERVER:-@@SERVER_URL@@}"
-TOKEN="${MANAGE_TOKEN:-}"
+SERVER="${REEVECTL_SERVER:-@@SERVER_URL@@}"
+TOKEN="${REEVECTL_TOKEN:-}"
 
 if [[ "$SERVER" == "@@SERVER_URL@@" || -z "$SERVER" ]]; then
-  echo "ERROR: MANAGE_SERVER not set" >&2
+  echo "ERROR: REEVECTL_SERVER not set" >&2
   exit 2
 fi
 if [[ -z "$TOKEN" ]]; then
-  echo "ERROR: MANAGE_TOKEN not set (generate one in /enrollment)" >&2
+  echo "ERROR: REEVECTL_TOKEN not set (generate one in /enrollment)" >&2
   exit 2
 fi
 
@@ -25,7 +25,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 2
 fi
 
-echo "[manage] Installing agent against ${SERVER}"
+echo "[reevectl] Installing agent against ${SERVER}"
 
 # Python 3 is in main on every supported Ubuntu — but ensure it's there.
 if ! command -v python3 >/dev/null; then
@@ -38,19 +38,19 @@ if ! command -v dconf >/dev/null; then
   apt-get install -y dconf-cli || true
 fi
 
-install -d -m 0755 /opt/manage-agent
-install -d -m 0700 /etc/manage-agent
+install -d -m 0755 /opt/reevectl-agent
+install -d -m 0700 /etc/reevectl-agent
 
-curl -fsSL "${SERVER}/agent/manage-agent.py" -o /opt/manage-agent/manage-agent.py
-chmod 0755 /opt/manage-agent/manage-agent.py
+curl -fsSL "${SERVER}/agent/reevectl-agent.py" -o /opt/reevectl-agent/reevectl-agent.py
+chmod 0755 /opt/reevectl-agent/reevectl-agent.py
 
-curl -fsSL "${SERVER}/agent/manage-agent.service" -o /etc/systemd/system/manage-agent.service
+curl -fsSL "${SERVER}/agent/reevectl-agent.service" -o /etc/systemd/system/reevectl-agent.service
 
 # Enroll once before starting the service.
-MANAGE_SERVER="${SERVER}" MANAGE_TOKEN="${TOKEN}" \
-  /usr/bin/python3 /opt/manage-agent/manage-agent.py enroll
+REEVECTL_SERVER="${SERVER}" REEVECTL_TOKEN="${TOKEN}" \
+  /usr/bin/python3 /opt/reevectl-agent/reevectl-agent.py enroll
 
 systemctl daemon-reload
-systemctl enable --now manage-agent.service
+systemctl enable --now reevectl-agent.service
 
-echo "[manage] Agent installed and started. Check journalctl -u manage-agent -f for logs."
+echo "[reevectl] Agent installed and started. Check journalctl -u reevectl-agent -f for logs."

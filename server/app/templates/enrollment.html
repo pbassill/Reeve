@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Enrollment — Manage{% endblock %}
+{% block title %}Enrollment — reevectl{% endblock %}
 {% block content %}
 <header class="page-head"><h1>Enrollment</h1></header>
 
@@ -20,7 +20,7 @@
 <section class="card highlight">
   <h2>Token created</h2>
   <p>Run this on each Ubuntu machine you want to enroll. The token is shown once.</p>
-  <pre class="output">curl -fsSL {{ public_url }}/install.sh | sudo MANAGE_SERVER={{ public_url }} MANAGE_TOKEN={{ new_token }} bash</pre>
+  <pre class="output">curl -fsSL {{ public_url }}/install.sh | sudo REEVECTL_SERVER={{ public_url }} REEVECTL_TOKEN={{ new_token }} bash</pre>
 </section>
 {% endif %}
 

@@ -119,7 +119,7 @@ async def admin_ws(ws: WebSocket, session_id: str) -> None:
     if not sess:
         # Late connect or server restart — accept then close so xterm shows the message.
         await ws.accept()
-        await ws.send_text("[manage] session no longer available\r\n")
+        await ws.send_text("[reevectl] session no longer available\r\n")
         await ws.close()
         return
     await ws.accept()
@@ -184,7 +184,7 @@ async def agent_close(
     sess = _sessions.pop(session_id, None)
     if sess and sess.admin_ws is not None:
         try:
-            await sess.admin_ws.send_text("\r\n[manage] session closed\r\n")
+            await sess.admin_ws.send_text("\r\n[reevectl] session closed\r\n")
             await sess.admin_ws.close()
         except Exception:
             pass
