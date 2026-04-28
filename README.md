@@ -408,11 +408,19 @@ reevectl/
 ## Development
 
 The agent is pure stdlib — runs on any modern Ubuntu without pip. The server
-needs Python 3.12+ and the deps in `server/requirements.txt`. For local dev:
+runs on **Python 3.12 specifically** (pinned for prebuilt-wheel reasons —
+some deps still lack 3.13+ wheels and compiling them from source needs the
+Rust toolchain). The native `server/install.sh` installs `python3.12`
+explicitly, falling back to the [deadsnakes PPA](https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa)
+if your Ubuntu release no longer ships it in the default repos. To override
+the interpreter, set `REEVECTL_PYTHON_BIN=/path/to/python3.x` before running
+the script.
+
+For local dev:
 
 ```bash
 cd server
-python3 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 REEVECTL_DATA_DIR=./data \
 REEVECTL_PUBLIC_URL=http://localhost:8000 \

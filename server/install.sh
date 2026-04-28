@@ -32,6 +32,13 @@ SERVICE_USER="reevectl"
 TLS_MODE="${REEVECTL_TLS:-caddy}"
 PORT="${REEVECTL_PORT:-8000}"
 
+# We pin to Python 3.12 explicitly. Newer Python versions (3.13+) lack
+# prebuilt wheels for some of our deps (pydantic-core in particular), and
+# letting pip fall back to compiling from Rust source needs ~1 GB of
+# toolchain and minutes of CPU. 3.12 is well-supported by every dep we use
+# and ships in Ubuntu 22.04+ either by default or as a non-default package.
+PYTHON_BIN="${REEVECTL_PYTHON_BIN:-python3.12}"
+
 if [[ $EUID -ne 0 ]]; then
   echo "ERROR: install.sh must run as root (sudo)." >&2
   exit 2
@@ -59,8 +66,33 @@ echo "[reevectl] Installing system packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-  python3 python3-venv python3-pip \
   ca-certificates curl rsync
+
+# Try to install Python 3.12 from the host's default apt repos first. If it
+# isn't there (recent Ubuntu releases drop older versions from main), fall
+# back to the deadsnakes PPA, which maintains every supported CPython.
+ensure_python312() {
+  if apt-get install -y --no-install-recommends \
+       python3.12 python3.12-venv python3.12-dev 2>/dev/null; then
+    return 0
+  fi
+  echo "[reevectl] python3.12 not in default apt — adding deadsnakes PPA..."
+  apt-get install -y --no-install-recommends software-properties-common gnupg
+  add-apt-repository -y ppa:deadsnakes/ppa
+  apt-get update -qq
+  apt-get install -y --no-install-recommends \
+    python3.12 python3.12-venv python3.12-dev
+}
+
+if ! command -v "$PYTHON_BIN" >/dev/null; then
+  ensure_python312
+fi
+if ! command -v "$PYTHON_BIN" >/dev/null; then
+  echo "ERROR: $PYTHON_BIN install failed. Set REEVECTL_PYTHON_BIN to an alternate" >&2
+  echo "       Python interpreter (3.12+, ideally 3.12) and re-run." >&2
+  exit 2
+fi
+echo "[reevectl] Using Python: $($PYTHON_BIN --version) at $(command -v "$PYTHON_BIN")"
 
 # --- 2. Service user ---------------------------------------------------------
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -84,9 +116,20 @@ rsync -a --delete \
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PREFIX/server" "$INSTALL_PREFIX/agent"
 
 # --- 5. Virtualenv -----------------------------------------------------------
+# If a venv already exists from a previous install, sanity-check that it's
+# Python 3.12 — older runs may have created one with whichever `python3`
+# was the system default at the time. If it's wrong, blow it away and rebuild.
+if [[ -x "$INSTALL_PREFIX/.venv/bin/python" ]]; then
+  CURRENT_VER=$("$INSTALL_PREFIX/.venv/bin/python" -c \
+    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
+  if [[ "$CURRENT_VER" != "3.12" ]]; then
+    echo "[reevectl] Existing venv runs Python ${CURRENT_VER:-unknown}, need 3.12 — recreating..."
+    rm -rf "$INSTALL_PREFIX/.venv"
+  fi
+fi
 if [[ ! -x "$INSTALL_PREFIX/.venv/bin/python" ]]; then
-  echo "[reevectl] Creating Python virtualenv..."
-  python3 -m venv "$INSTALL_PREFIX/.venv"
+  echo "[reevectl] Creating Python virtualenv with $PYTHON_BIN..."
+  "$PYTHON_BIN" -m venv "$INSTALL_PREFIX/.venv"
 fi
 echo "[reevectl] Installing/upgrading Python dependencies..."
 "$INSTALL_PREFIX/.venv/bin/pip" install --quiet --upgrade pip
