@@ -1,0 +1,35 @@
+services:
+  manage:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      MANAGE_PUBLIC_URL: "${MANAGE_PUBLIC_URL:?set MANAGE_PUBLIC_URL=https://your-domain.example.com in .env}"
+      MANAGE_ADMIN_USER: "${MANAGE_ADMIN_USER:-admin}"
+      MANAGE_ADMIN_PASSWORD: "${MANAGE_ADMIN_PASSWORD:-}"
+      MANAGE_CHECKIN_INTERVAL: "${MANAGE_CHECKIN_INTERVAL:-30}"
+    volumes:
+      - manage_data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      MANAGE_DOMAIN: "${MANAGE_DOMAIN:?set MANAGE_DOMAIN=your-domain.example.com in .env}"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - manage
+
+volumes:
+  manage_data:
+  caddy_data:
+  caddy_config:
