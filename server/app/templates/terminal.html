@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Terminal: {{ agent.hostname }} — Manage{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>Terminal: {{ agent.hostname }}</h1>
+    <div class="muted mono">session {{ session_id[:12] }}…</div>
+  </div>
+  <a href="/devices/{{ agent.agent_id }}"><button type="button">Back to device</button></a>
+</header>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.10.0/lib/xterm-addon-fit.min.js"></script>
+
+<section class="card">
+  <p class="muted">It may take up to <strong>{{ 30 }}s</strong> for the agent to dial back in (waits for its next check-in).</p>
+  <div id="term" style="height:540px"></div>
+</section>
+
+<script>
+(function() {
+  const term = new Terminal({
+    convertEol: true,
+    cursorBlink: true,
+    fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+    fontSize: 13,
+    theme: { background: '#0f1115', foreground: '#e7ecf3' },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('term'));
+  fit.fit();
+  window.addEventListener('resize', () => fit.fit());
+
+  term.write('[manage] connecting to agent…\r\n');
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws/terminal/{{ session_id }}`;
+  const ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => term.write('[manage] connected — waiting for shell\r\n');
+  ws.onmessage = (e) => term.write(e.data);
+  ws.onclose = () => term.write('\r\n[manage] disconnected\r\n');
+
+  term.onData(d => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(d));
+    }
+  });
+})();
+</script>
+{% endblock %}

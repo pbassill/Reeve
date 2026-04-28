@@ -9,9 +9,12 @@
     </h1>
     <div class="muted mono">{{ agent.agent_id }}</div>
   </div>
-  <form method="post" action="/devices/{{ agent.agent_id }}/delete" onsubmit="return confirm('Remove this device from Manage? It will need to re-enroll to come back.')">
-    <button class="danger" type="submit">Remove device</button>
-  </form>
+  <div class="row-actions">
+    <form method="post" action="/devices/{{ agent.agent_id }}/terminal"><button type="submit">Open terminal</button></form>
+    <form method="post" action="/devices/{{ agent.agent_id }}/delete" onsubmit="return confirm('Remove this device from Manage? It will need to re-enroll to come back.')">
+      <button class="danger" type="submit">Remove device</button>
+    </form>
+  </div>
 </header>
 
 <section class="info-grid">

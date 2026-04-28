@@ -103,6 +103,3 @@ async def ws_devices(ws: WebSocket) -> None:
         await manager.disconnect(ws)
 
 
-@router.on_event("startup")
-async def _attach() -> None:
-    manager.attach_loop(asyncio.get_running_loop())

@@ -19,7 +19,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.3.0"
+AGENT_VERSION = "0.4.0"
 CONFIG_PATH = Path(os.environ.get("MANAGE_CONFIG", "/etc/manage-agent/config.json"))
 DEFAULT_INTERVAL = 30
 
@@ -175,6 +175,7 @@ def collect_system_info() -> dict[str, Any]:
     os_name, os_version = _os_release()
     mem_used, mem_total = _meminfo()
     disk_used, disk_total = _diskinfo()
+    hw = collect_hardware_info()
     return {
         "hostname": socket.gethostname(),
         "os_name": os_name,
@@ -192,6 +193,12 @@ def collect_system_info() -> dict[str, Any]:
         "ip_address": _primary_ip(),
         "agent_version": AGENT_VERSION,
         "logged_in_user": _logged_in_user(),
+        "manufacturer": hw.get("manufacturer", ""),
+        "product_name": hw.get("product_name", ""),
+        "serial_number": hw.get("serial_number", ""),
+        "bios_version": hw.get("bios_version", ""),
+        "gpu_model": hw.get("gpu_model", ""),
+        "mac_address": hw.get("mac_address", ""),
     }
 
 
@@ -620,6 +627,430 @@ def _install_file_server(p: dict[str, Any]) -> tuple[int, str, str]:
     return _run(_FILE_SERVER_SCRIPT, shell=True, env=env, timeout=1800)
 
 
+_PRINT_SERVER_SCRIPT = r"""
+set -euo pipefail
+: "${ALLOW_REMOTE:=0}"
+: "${ADMIN_USERNAME:=}"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y --no-install-recommends cups cups-client cups-bsd printer-driver-all
+
+systemctl enable --now cups
+
+if [ -n "${ADMIN_USERNAME}" ]; then
+  if id -u "${ADMIN_USERNAME}" >/dev/null 2>&1; then
+    usermod -aG lpadmin "${ADMIN_USERNAME}" || true
+  fi
+fi
+
+if [ "${ALLOW_REMOTE}" = "1" ]; then
+  cupsctl --remote-admin --remote-any --share-printers
+else
+  cupsctl --no-remote-admin
+fi
+
+systemctl restart cups
+echo "[role:print_server] CUPS up. Admin UI at http://$(hostname -I | awk '{print $1}'):631 (root or lpadmin members)."
+"""
+
+
+def _install_print_server(p: dict[str, Any]) -> tuple[int, str, str]:
+    env = {
+        **os.environ,
+        "ALLOW_REMOTE": "1" if p.get("allow_remote_admin") else "0",
+        "ADMIN_USERNAME": p.get("admin_username") or "",
+    }
+    return _run(_PRINT_SERVER_SCRIPT, shell=True, env=env, timeout=1800)
+
+
+_DHCP_DNS_SCRIPT = r"""
+set -euo pipefail
+: "${INTERFACE:?INTERFACE required}"
+: "${SUBNET:?SUBNET required}"
+: "${RANGE_START:?RANGE_START required}"
+: "${RANGE_END:?RANGE_END required}"
+: "${GATEWAY:?GATEWAY required}"
+: "${NETMASK:=255.255.255.0}"
+: "${UPSTREAM_DNS:=1.1.1.1}"
+: "${DOMAIN:=lan}"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y --no-install-recommends dnsmasq
+
+# dnsmasq listens on 53; systemd-resolved would conflict.
+if systemctl is-enabled systemd-resolved >/dev/null 2>&1; then
+  systemctl disable --now systemd-resolved
+fi
+# Replace the symlink to /run/systemd/resolve/stub-resolv.conf with a real file.
+if [ -L /etc/resolv.conf ]; then
+  rm /etc/resolv.conf
+fi
+cat > /etc/resolv.conf <<EOF
+nameserver 127.0.0.1
+nameserver ${UPSTREAM_DNS}
+search ${DOMAIN}
+EOF
+
+cat > /etc/dnsmasq.d/manage.conf <<EOF
+# Managed by Manage. Do not edit by hand.
+interface=${INTERFACE}
+bind-interfaces
+domain-needed
+bogus-priv
+no-resolv
+server=${UPSTREAM_DNS}
+domain=${DOMAIN}
+local=/${DOMAIN}/
+expand-hosts
+
+dhcp-range=${RANGE_START},${RANGE_END},${NETMASK},12h
+dhcp-option=3,${GATEWAY}
+dhcp-option=6,${GATEWAY}
+EOF
+
+dnsmasq --test
+systemctl enable --now dnsmasq
+systemctl restart dnsmasq
+echo "[role:dhcp_dns] dnsmasq up on ${INTERFACE} (${RANGE_START}-${RANGE_END}, gw=${GATEWAY})"
+"""
+
+
+def _install_dhcp_dns(p: dict[str, Any]) -> tuple[int, str, str]:
+    env = {
+        **os.environ,
+        "INTERFACE": p.get("interface", ""),
+        "SUBNET": p.get("subnet", ""),
+        "RANGE_START": p.get("range_start", ""),
+        "RANGE_END": p.get("range_end", ""),
+        "GATEWAY": p.get("gateway", ""),
+        "NETMASK": p.get("netmask") or "255.255.255.0",
+        "UPSTREAM_DNS": p.get("upstream_dns") or "1.1.1.1",
+        "DOMAIN": p.get("domain") or "lan",
+    }
+    return _run(_DHCP_DNS_SCRIPT, shell=True, env=env, timeout=1800)
+
+
+# --- Compliance check (rule evaluator) -------------------------------------
+
+
+def _check_compliance(p: dict[str, Any]) -> tuple[int, str, str]:
+    """Evaluates the rules in p['rules'] and reports drift as JSON on stdout.
+
+    Exit code 0 = compliant, 1 = drift found (for the server's status mapping).
+    """
+    rules = p.get("rules") or []
+    findings: list[dict] = []
+    for rule in rules:
+        kind = rule.get("kind")
+        params = rule.get("params") or {}
+        try:
+            f = _eval_rule(kind, params)
+        except Exception as e:
+            f = {
+                "rule_id": rule.get("id"),
+                "kind": kind,
+                "params": params,
+                "message": f"check error: {e}",
+            }
+        if f:
+            f.setdefault("rule_id", rule.get("id"))
+            f.setdefault("kind", kind)
+            f.setdefault("params", params)
+            findings.append(f)
+    body = json.dumps({"drift": findings}, separators=(",", ":"))
+    return (1 if findings else 0), body, ""
+
+
+def _eval_rule(kind: str, params: dict) -> dict | None:
+    if kind == "package_installed":
+        wanted = params.get("packages") or []
+        installed = _apt_installed_set()
+        missing = [p for p in wanted if p not in installed]
+        if missing:
+            return {"missing": missing, "message": f"missing packages: {' '.join(missing)}"}
+        return None
+    if kind == "package_absent":
+        forbidden = params.get("packages") or []
+        installed = _apt_installed_set()
+        present = [p for p in forbidden if p in installed]
+        if present:
+            return {"present": present, "message": f"forbidden packages installed: {' '.join(present)}"}
+        return None
+    if kind == "service_running":
+        bad = []
+        for svc in params.get("services") or []:
+            r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True)
+            if r.stdout.strip() != "active":
+                bad.append(svc)
+        if bad:
+            return {"not_running": bad, "message": f"services not running: {' '.join(bad)}"}
+        return None
+    if kind == "file_contains":
+        path = params.get("path", "")
+        regex = params.get("regex", "")
+        if not path or not regex:
+            return {"message": "file_contains requires path + regex"}
+        try:
+            content = Path(path).read_text(errors="replace")
+        except FileNotFoundError:
+            return {"message": f"{path} not found"}
+        import re as _re
+        if not _re.search(regex, content, _re.MULTILINE):
+            return {"message": f"{path} does not match /{regex}/"}
+        return None
+    return {"message": f"unknown rule kind {kind}"}
+
+
+def _apt_installed_set() -> set[str]:
+    out = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Package}\t${Status}\n"],
+        capture_output=True, text=True,
+    )
+    installed: set[str] = set()
+    for line in out.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and "ok installed" in parts[1]:
+            installed.add(parts[0])
+    return installed
+
+
+# --- Inventory upload -------------------------------------------------------
+
+
+def _inventory_refresh(state: dict[str, Any]) -> tuple[int, str, str]:
+    cfg = state.get("config") or {}
+    server = cfg.get("server", "")
+    token = cfg.get("token", "")
+    pkgs = _collect_packages()
+    body = json.dumps({"hash": _packages_hash(pkgs), "packages": pkgs}, separators=(",", ":"))
+    raw = body.encode()
+    req = urllib.request.Request(
+        f"{server}/api/agents/inventory/packages",
+        data=raw,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"manage-agent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        urllib.request.urlopen(req, timeout=120).read()
+    except Exception as e:
+        return 1, "", f"upload failed: {e}"
+    return 0, f"uploaded {len(pkgs)} packages", ""
+
+
+def _collect_packages() -> list[dict]:
+    out: list[dict] = []
+    dpkg = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Package}\t${Version}\t${Status}\n"],
+        capture_output=True, text=True,
+    )
+    for line in dpkg.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and "ok installed" in parts[2]:
+            out.append({"source": "apt", "name": parts[0], "version": parts[1]})
+    snap = subprocess.run(["snap", "list", "--unicode=never"], capture_output=True, text=True)
+    if snap.returncode == 0:
+        lines = snap.stdout.splitlines()[1:]  # skip header
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 2:
+                out.append({"source": "snap", "name": parts[0], "version": parts[1]})
+    flat = subprocess.run(
+        ["flatpak", "list", "--app", "--columns=application,version"],
+        capture_output=True, text=True,
+    )
+    if flat.returncode == 0:
+        for line in flat.stdout.splitlines():
+            parts = line.split("\t") if "\t" in line else line.split(None, 1)
+            if not parts or parts[0] in ("Application", ""):
+                continue
+            out.append({"source": "flatpak", "name": parts[0], "version": parts[1] if len(parts) > 1 else ""})
+    return out
+
+
+def _packages_hash(pkgs: list[dict]) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    for p in sorted(pkgs, key=lambda x: (x.get("source", ""), x.get("name", ""), x.get("version", ""))):
+        h.update(f"{p.get('source')}\t{p.get('name')}\t{p.get('version')}\n".encode())
+    return h.hexdigest()
+
+
+# --- Hardware inventory enrichment (called as part of system_info) ----------
+
+
+def collect_hardware_info() -> dict[str, str]:
+    def read(path: str) -> str:
+        try:
+            return Path(path).read_text().strip()
+        except OSError:
+            return ""
+    info = {
+        "manufacturer": read("/sys/class/dmi/id/sys_vendor"),
+        "product_name": read("/sys/class/dmi/id/product_name"),
+        "serial_number": read("/sys/class/dmi/id/product_serial"),
+        "bios_version": read("/sys/class/dmi/id/bios_version"),
+    }
+    # GPU: lspci first card with 'VGA' or '3D'
+    try:
+        r = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            if "VGA compatible controller" in line or "3D controller" in line:
+                info["gpu_model"] = line.split(":", 2)[-1].strip()[:255]
+                break
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    info.setdefault("gpu_model", "")
+    # Primary NIC MAC (the one that owns our default route)
+    try:
+        r = subprocess.run(["ip", "-o", "route", "show", "default"], capture_output=True, text=True, timeout=5)
+        iface = ""
+        for tok in r.stdout.split():
+            if tok == "dev":
+                iface = r.stdout.split()[r.stdout.split().index("dev") + 1]
+                break
+        if iface:
+            info["mac_address"] = read(f"/sys/class/net/{iface}/address")
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError):
+        pass
+    info.setdefault("mac_address", "")
+    return info
+
+
+# --- Web terminal (HTTP-streaming bridge) -----------------------------------
+
+
+def _open_terminal(p: dict[str, Any], state: dict[str, Any]) -> tuple[int, str, str]:
+    """Opens a pty and bridges its stdin/stdout to the server over HTTPS.
+
+    Runs synchronously in this thread until the session ends, but the agent's
+    main check-in loop continues because each task already runs after checkin
+    and before the next sleep — terminal sessions are bounded by their server
+    side (which closes the input stream when the admin disconnects).
+    """
+    session_id = (p.get("session_id") or "").strip()
+    if not session_id:
+        return 1, "", "missing session_id"
+    cfg = state.get("config") or {}
+    server = cfg.get("server", "")
+    token = cfg.get("token", "")
+    if not server or not token:
+        return 1, "", "agent has no config"
+    try:
+        return _terminal_bridge(server, token, session_id)
+    except Exception as e:
+        return 1, "", f"terminal bridge error: {e}"
+
+
+def _terminal_bridge(server: str, token: str, session_id: str) -> tuple[int, str, str]:
+    import fcntl
+    import pty
+    import select
+    import signal
+    import threading
+
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        os.execvp("bash", ["bash", "-i"])
+
+    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": f"manage-agent/{AGENT_VERSION}",
+    }
+    stop = threading.Event()
+
+    def stdin_pump() -> None:
+        # Long-poll the server for keystrokes; write each chunk into the pty.
+        while not stop.is_set():
+            try:
+                req = urllib.request.Request(
+                    f"{server}/api/agents/terminal/{session_id}/stdin",
+                    headers=headers,
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+                    if not data:
+                        continue
+                    if data == b"__CLOSE__":
+                        stop.set()
+                        try:
+                            os.kill(pid, signal.SIGHUP)
+                        except ProcessLookupError:
+                            pass
+                        return
+                    try:
+                        os.write(master_fd, data)
+                    except OSError:
+                        stop.set()
+                        return
+            except urllib.error.HTTPError as e:
+                if e.code == 404:  # session closed server-side
+                    stop.set()
+                    return
+                time.sleep(0.5)
+            except Exception:
+                time.sleep(0.5)
+
+    threading.Thread(target=stdin_pump, daemon=True).start()
+
+    # Stdout pump: read chunks from the pty, POST each one to the server.
+    while not stop.is_set():
+        try:
+            r, _, _ = select.select([master_fd], [], [], 0.5)
+            if master_fd in r:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                try:
+                    req = urllib.request.Request(
+                        f"{server}/api/agents/terminal/{session_id}/stdout",
+                        data=chunk,
+                        headers={**headers, "Content-Type": "application/octet-stream"},
+                        method="POST",
+                    )
+                    urllib.request.urlopen(req, timeout=10).read()
+                except Exception:
+                    pass
+            # Reap the child if it exited.
+            wpid, _ = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                break
+        except Exception:
+            break
+    stop.set()
+    try:
+        os.kill(pid, signal.SIGHUP)
+    except ProcessLookupError:
+        pass
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+    # Tell the server we're done so it can close the admin WebSocket.
+    try:
+        req = urllib.request.Request(
+            f"{server}/api/agents/terminal/{session_id}/close",
+            headers=headers,
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception:
+        pass
+    return 0, f"terminal session {session_id} closed", ""
+
+
 def _ensure_flatpak() -> tuple[int, str, str]:
     if subprocess.run(["which", "flatpak"], capture_output=True).returncode == 0:
         return 0, "", ""
@@ -786,7 +1217,7 @@ def checkin_loop(cfg: dict[str, Any]) -> None:
     server = cfg["server"]
     headers = {"Authorization": f"Bearer {cfg['token']}"}
     interval = int(cfg.get("checkin_interval_seconds", DEFAULT_INTERVAL))
-    state: dict[str, Any] = {"force_self_update": False}
+    state: dict[str, Any] = {"force_self_update": False, "config": cfg}
 
     while True:
         try:
