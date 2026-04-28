@@ -68,15 +68,26 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
   ca-certificates curl rsync
 
-# Try to install Python 3.12 from the host's default apt repos first. If it
-# isn't there (recent Ubuntu releases drop older versions from main), fall
-# back to the deadsnakes PPA, which maintains every supported CPython.
+# Verify a candidate binary actually reports CPython 3.12 — not just exists.
+# (Some distros ship a `python3.12` transitional package whose binary points
+# to a newer interpreter; a presence check would let it through.)
+verify_python_312() {
+  local bin="$1"
+  command -v "$bin" >/dev/null 2>&1 || return 1
+  local ver
+  ver=$("$bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null) || return 1
+  [[ "$ver" == "3.12" ]]
+}
+
+# Install Python 3.12 from the host's default apt repos. If 3.12 isn't there
+# (recent Ubuntu releases drop older Pythons from main), fall back to the
+# deadsnakes PPA which maintains every supported CPython.
 ensure_python312() {
   if apt-get install -y --no-install-recommends \
-       python3.12 python3.12-venv python3.12-dev 2>/dev/null; then
+       python3.12 python3.12-venv python3.12-dev; then
     return 0
   fi
-  echo "[reevectl] python3.12 not in default apt — adding deadsnakes PPA..."
+  echo "[reevectl] python3.12 not installable from default apt — adding deadsnakes PPA..."
   apt-get install -y --no-install-recommends software-properties-common gnupg
   add-apt-repository -y ppa:deadsnakes/ppa
   apt-get update -qq
@@ -84,12 +95,19 @@ ensure_python312() {
     python3.12 python3.12-venv python3.12-dev
 }
 
-if ! command -v "$PYTHON_BIN" >/dev/null; then
+if ! verify_python_312 "$PYTHON_BIN"; then
   ensure_python312
 fi
-if ! command -v "$PYTHON_BIN" >/dev/null; then
-  echo "ERROR: $PYTHON_BIN install failed. Set REEVECTL_PYTHON_BIN to an alternate" >&2
-  echo "       Python interpreter (3.12+, ideally 3.12) and re-run." >&2
+if ! verify_python_312 "$PYTHON_BIN"; then
+  WHAT=$("$PYTHON_BIN" --version 2>&1 || echo "cannot invoke")
+  RESOLVED=$(command -v "$PYTHON_BIN" 2>/dev/null || echo "not found")
+  cat >&2 <<EOF
+ERROR: \$PYTHON_BIN ($PYTHON_BIN) is not a working Python 3.12.
+       resolves to: $RESOLVED
+       reports:     $WHAT
+       Set REEVECTL_PYTHON_BIN to a path of a real Python 3.12 binary and re-run, e.g.:
+         sudo REEVECTL_PYTHON_BIN=/usr/bin/python3.12 REEVECTL_DOMAIN=$REEVECTL_DOMAIN ./server/install.sh
+EOF
   exit 2
 fi
 echo "[reevectl] Using Python: $($PYTHON_BIN --version) at $(command -v "$PYTHON_BIN")"
@@ -117,13 +135,17 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PREFIX/server" "$INSTALL_PREFIX
 
 # --- 5. Virtualenv -----------------------------------------------------------
 # If a venv already exists from a previous install, sanity-check that it's
-# Python 3.12 — older runs may have created one with whichever `python3`
-# was the system default at the time. If it's wrong, blow it away and rebuild.
-if [[ -x "$INSTALL_PREFIX/.venv/bin/python" ]]; then
-  CURRENT_VER=$("$INSTALL_PREFIX/.venv/bin/python" -c \
-    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
+# Python 3.12. Older runs may have created one with whichever `python3`
+# was the system default at the time (3.14 on recent Ubuntu); if it's
+# wrong, blow it away and rebuild.
+if [[ -d "$INSTALL_PREFIX/.venv" ]]; then
+  CURRENT_VER=""
+  if [[ -x "$INSTALL_PREFIX/.venv/bin/python" ]]; then
+    CURRENT_VER=$("$INSTALL_PREFIX/.venv/bin/python" -c \
+      'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+  fi
   if [[ "$CURRENT_VER" != "3.12" ]]; then
-    echo "[reevectl] Existing venv runs Python ${CURRENT_VER:-unknown}, need 3.12 — recreating..."
+    echo "[reevectl] Existing venv reports Python '${CURRENT_VER:-unknown}', need 3.12 — recreating..."
     rm -rf "$INSTALL_PREFIX/.venv"
   fi
 fi
@@ -131,6 +153,33 @@ if [[ ! -x "$INSTALL_PREFIX/.venv/bin/python" ]]; then
   echo "[reevectl] Creating Python virtualenv with $PYTHON_BIN..."
   "$PYTHON_BIN" -m venv "$INSTALL_PREFIX/.venv"
 fi
+
+# Belt + braces: verify the venv is actually 3.12 before installing deps.
+# If this assertion fails, $PYTHON_BIN was a wrapper / transitional package
+# whose -m venv ended up calling a different interpreter — bail out before
+# pip wastes 10 minutes compiling pydantic-core from Rust source.
+VENV_VER=$("$INSTALL_PREFIX/.venv/bin/python" -c \
+  'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+if [[ "$VENV_VER" != "3.12" ]]; then
+  cat >&2 <<EOF
+ERROR: venv at $INSTALL_PREFIX/.venv reports Python $VENV_VER, expected 3.12.
+       \$PYTHON_BIN: $PYTHON_BIN
+       resolves to: $(command -v "$PYTHON_BIN" 2>/dev/null || echo 'not found')
+       reports:     $("$PYTHON_BIN" --version 2>&1 || echo 'cannot invoke')
+
+This usually means \$PYTHON_BIN is a wrapper or transitional package that
+forwards to a different interpreter. Try pointing at the real binary:
+  sudo REEVECTL_PYTHON_BIN=/usr/bin/python3.12 REEVECTL_DOMAIN=... ./server/install.sh
+
+Or install python3.12 from deadsnakes:
+  sudo add-apt-repository ppa:deadsnakes/ppa
+  sudo apt update
+  sudo apt install python3.12 python3.12-venv python3.12-dev
+EOF
+  exit 2
+fi
+echo "[reevectl] venv ready: $("$INSTALL_PREFIX/.venv/bin/python" --version) at $INSTALL_PREFIX/.venv"
+
 echo "[reevectl] Installing/upgrading Python dependencies..."
 "$INSTALL_PREFIX/.venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_PREFIX/.venv/bin/pip" install --quiet --upgrade -r "$INSTALL_PREFIX/server/requirements.txt"
